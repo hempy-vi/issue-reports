@@ -94,7 +94,7 @@ Bổ sung lại dòng `END;` còn thiếu trước dấu `/` ở cuối, vào c�
 
 ---
 
-**Các điểm còn cần user/phía nghiệp vụ xác nhận trước khi đưa vào chạy chính thức** (xem `results/patch_LG_PRO_DAILY_LOT_TRACKING_JOB.md` trong session DONGIL để biết chi tiết đầy đủ):
+**Các điểm còn cần user/phía nghiệp vụ xác nhận trước khi đưa vào chạy chính thức:**
 1. Việc giữ nguyên `LOT_NO` sau khi đổi mã nguyên liệu có chấp nhận được không, hay cần 1 số tham chiếu lot khác.
 2. Số dư sổ sách BRAMID bị "mồ côi" sau đó (không bao giờ được job này tiêu thụ nữa) có ảnh hưởng gì tới tồn kho/giá thành phía sau hay không.
 3. Xác nhận quy trình chạy lại cho tháng 8 (tạm thời hardcode `L_MONTH:='202608'`, chạy tay 1 lần, rồi revert lại) có khớp với dự tính của DONGIL/consultant.

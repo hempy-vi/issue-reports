@@ -94,7 +94,7 @@ Appended the missing `END;` before the trailing `/` in both `LG_PRO_DAILY_LOT_TR
 
 ---
 
-**Open items still awaiting user/business confirmation before this goes to production** (see `results/patch_LG_PRO_DAILY_LOT_TRACKING_JOB.md` in the DONGIL workspace session for full detail):
+**Open items still awaiting user/business confirmation before this goes to production:**
 1. Whether keeping `LOT_NO` unchanged after a material-code swap is acceptable, or a different lot reference is needed.
 2. Whether the resulting "orphaned" BRAMID book balance (never consumed by this job again) has any downstream inventory/costing impact.
 3. Confirm the runbook for re-running August (temporarily hardcoding `L_MONTH:='202608'`, running once manually, then reverting) matches DONGIL/consultant's intended process.
