@@ -180,19 +180,77 @@ chạy đêm nay có tự làm sạch tháng 9 như mong đợi hay không.
 
 ---
 
+**15. Kiểm tra an toàn trước khi chủ động chạy lại tay cho tháng 8**
+
+Trước khi chạy lại tay cho tháng 8, kiểm tra xem tháng 8 đã trải qua đóng sổ tháng chưa và liệu chế độ "đóng sổ THÁNG" của job có an toàn để dùng không. Phát hiện tháng 8 đã có sẵn 1 bản snapshot đóng sổ, nhưng đối chiếu lại thì thấy điều bất thường: bản snapshot đó chỉ ghi nhận 1 tập lô sản xuất nhỏ hơn nhiều — và khác hẳn — so với dữ liệu tracking đang sống; những lô đã đúng nguyên liệu duyệt trong snapshot thì đúng nhãn, còn những lô đang mang nguyên liệu chưa duyệt thì hoàn toàn không xuất hiện trong snapshot dưới bất kỳ nhãn nào.
+
+Thực hiện 1 vòng điều tra tương đương 4 người trước khi cho phép dùng chế độ "đóng sổ THÁNG". Kết quả: bản snapshot đó do 1 quy trình đóng sổ hoàn toàn khác, không liên quan gì tới job đang sửa, sinh ra — và nó chỉ ghi nhận khoảng 1/3 số lô sản xuất của tháng 8; 2/3 còn lại bị bỏ sót bao gồm TOÀN BỘ các lô đang mang nguyên liệu chưa duyệt. Mô phỏng thử chế độ "đóng sổ THÁNG" xác nhận nó sẽ không báo lỗi, nhưng sẽ âm thầm làm biến mất hoàn toàn khoảng 500 tấn dữ liệu tồn kho thật (chứ không phải chỉ đổi nhãn), vì nó sẽ xoá và dựng lại dữ liệu tháng 8 từ đúng bản snapshot thiếu đó. Cũng xác nhận trạng thái duyệt đóng sổ của tháng 8 sẽ không bị ảnh hưởng dù chạy hay không, và chạy lại không tạo ra bản ghi lịch sử đóng sổ trùng lặp.
+
+**Kết luận: không được dùng chế độ "đóng sổ THÁNG" cho tháng 8.** Đã chuẩn bị sẵn 1 phương án dự phòng rủi ro thấp hơn (sửa trực tiếp các dòng nguyên liệu chưa duyệt hiện có, chỉ đổi nhãn, không đổi số lượng) làm phương án thay thế. Sau đó user xác nhận thêm bối cảnh nghiệp vụ quan trọng: dữ liệu lot tracking là 1 module độc lập, an toàn để xoá sạch và dựng lại toàn bộ, và bất kỳ tháng nào đã qua đóng sổ đều bắt buộc phải có dữ liệu lot tracking tháng chạy được. Dựa trên đó, khuyến nghị cuối cùng là dùng chế độ xử lý thông thường (cơ chế hàng ngày) cho cả tháng 8 lẫn tháng 9 thay vì chế độ snapshot tháng — chế độ thông thường là chế độ đã được kiểm chứng đầy đủ và tính từ dữ liệu nguồn thật, đầy đủ cho toàn bộ các lô sản xuất của tháng 8, không phụ thuộc snapshot thiếu.
+
+**16. User chạy lại cho tháng 8 rồi tháng 9 — phát hiện lỗi mới: mất dữ liệu thật**
+
+Sau khi chạy lại, nguyên liệu chưa duyệt đã đúng là biến mất khỏi sổ sách cho cả tháng 8 lẫn tháng 9 — đạt đúng mục tiêu chính của ticket. Tuy nhiên, so sánh khối lượng trước/sau phát hiện 1 vấn đề mới: số liệu "nguyên liệu chuyển vào kho pha trộn" của tháng 8 giảm khoảng 97.5% — từ khoảng 1,071 tấn xuống chỉ còn 27 tấn — trong khi số liệu tồn đầu kỳ vẫn đúng nguyên vẹn. Xác nhận các giao dịch chuyển kho thật trong hồ sơ nguồn vẫn còn đầy đủ (khoảng 1,085 tấn) — không hề mất ở nguồn, nên lỗi phải nằm ở logic ghi nhận.
+
+Xác nhận nguyên nhân gốc bằng 1 ví dụ cụ thể: 1 bước kiểm tra chống trùng lặp trong job (dùng để tránh ghi trùng cùng 1 giao dịch chuyển kho 2 lần) không tính đến việc đang kiểm tra cho tháng nào — nó chỉ xem có bản ghi khớp tồn tại ở BẤT KỲ đâu, không phân biệt tháng. Vì tháng 9 đã chạy đêm liên tục từ trước và đã mang theo tham chiếu tới cùng 1 chứng từ chuyển kho gốc vào số dư đầu kỳ của chính nó, nên khi chạy lại cho tháng 8, job thấy tham chiếu đó và tưởng nhầm "đã ghi rồi" nên bỏ qua việc ghi số liệu chuyển kho thật của tháng 8. Đây là **lỗi có sẵn từ trước, không phải do bản sửa này gây ra** — vô hại suốt nhiều năm vì job luôn chạy tuần tự đúng thứ tự thời gian, và đây là lần đầu tiên 1 tháng đã qua được chạy lại trong khi tháng sau đã có dữ liệu. Không có gì thực sự mất — số liệu gốc đúng vẫn còn nằm trong hệ thống (chỉ bị đánh dấu ngừng hoạt động, không bị xoá thật) và có thể khôi phục được.
+
+**17. Rà soát toàn bộ job tìm mọi chỗ dính cùng dạng lỗi**
+
+Kiểm tra toàn bộ job từ đầu đến cuối để tìm mọi chỗ có kiểu kiểm tra chống trùng lặp tương tự. Tìm được đúng 1 chỗ khác dính cùng lỗi (liên quan tới 1 bản ghi sản xuất thành phẩm khác, chưa từng thực sự gây mất dữ liệu trên thực tế nhưng mang cùng rủi ro tiềm ẩn) — đã bổ sung vào cùng bản sửa. Xác nhận mọi chỗ kiểm tra tương tự khác trong job đều an toàn (đều so khớp theo đúng ngày cụ thể, không chỉ theo tháng, nên không dính lỗi này), và xác nhận chế độ "đóng sổ THÁNG" hoàn toàn không có loại kiểm tra này nên không bị ảnh hưởng bởi vấn đề này.
+
+**18. Thiết kế và kiểm chứng bản sửa cho cả 2 chỗ kiểm tra bị lỗi**
+
+Thiết kế bản sửa tối thiểu: bổ sung thêm điều kiện lọc theo đúng tháng (và với 1 trong 2 chỗ, thêm cả loại bản ghi cụ thể) vào mỗi bước kiểm tra chống trùng, để chỉ xét những bản ghi của đúng tháng đang xử lý thay vì bất kỳ tháng nào. Kiểm chứng an toàn cho cả 2 chiều: chạy lại nhiều lần cho cùng 1 tháng vẫn hoàn toàn an toàn (bước xoá-và-dựng-lại đã xoá sạch dữ liệu của tháng đó trước rồi), và chạy lại cho 1 tháng đã qua trong khi tháng sau đã có dữ liệu giờ được cho phép đúng thay vì bị chặn nhầm. Đã đối chiếu lại độc lập nội dung chính xác của cả 2 chỗ kiểm tra bị lỗi trực tiếp trên hệ thống thật (không dựa vào ghi chú trước đó) trước khi áp dụng bản sửa, để loại trừ khả năng có sai lệch. Kiểm tra cấu trúc xác nhận bản đã sửa giống hệt bản gốc ở mọi nơi khác, chỉ khác đúng 2 chỗ đã chủ đích thêm vào.
+
+**19. Điều tra xem dữ liệu theo dõi truy xuất nguồn gốc cho hàng giao khách hàng có cần nằm trong phạm vi khôi phục không**
+
+Trước khi chốt phương án khôi phục, kiểm tra xem dữ liệu theo dõi riêng đứng sau các màn hình giao hàng/truy xuất nguồn gốc cho khách hàng có cần được xoá và dựng lại cùng lúc không. Phát hiện dữ liệu này do 2 quy trình hoàn toàn khác (không phải job đang sửa) sinh ra, các quy trình này lấy số liệu thành phần nguyên liệu trực tiếp từ đúng những bản ghi đang bị lỗi nguyên liệu chưa duyệt — nên có liên quan tới vấn đề này, nhưng việc dựng lại dữ liệu đó chỉ thực sự xảy ra khi có người mở đúng màn hình theo dõi cho đúng khoảng ngày cần xem; job hàng ngày chỉ dọn dẹp 1 phần dữ liệu đó (bỏ qua mọi bản ghi đã từng gửi cho khách qua email/thông báo, vì không lọc theo tháng). Cũng phát hiện thêm 1 lỗi riêng, không liên quan: 1 trường ngày giao hàng trên dữ liệu đó luôn bị để trống do lỗi code trong quy trình dựng dữ liệu đó.
+
+Kiểm tra số liệu thật cho đúng khoảng ngày liên quan và phát hiện: do hệ quả phụ của 2 lần chạy lại ở bước 16, toàn bộ bản ghi theo dõi giao hàng liên quan trong khoảng đó đã tự động bị dọn sạch sẵn rồi — nên lần này không cần thao tác xoá tay riêng. Ghi chú đây chỉ là may mắn cho đúng tình huống này (chưa có bản ghi nào đã gửi khách trong khoảng đó) chứ không nên coi là cơ chế đáng tin cậy cho những lần sau.
+
+**20. User quyết định hướng khôi phục: xoá sạch dữ liệu tháng 8+9 rồi chạy lại**
+
+User quyết định 1 phương án khôi phục triệt để hơn: xoá sạch toàn bộ dữ liệu tháng 8 và tháng 9 trên toàn module (thay vì chỉ dựa vào cờ "ngừng hoạt động" còn sót lại từ lần chạy sự cố trước đó), rồi chạy lại job cho cả 2 tháng. Rà soát mọi bảng có tên gợi ý thuộc module tracking này và xác định chính xác những bảng nào thực sự được job này ghi và có phân theo tháng (đúng 3 bảng, tổng cộng khoảng 105,000 dòng cho cả 2 tháng, tính cả các bản sao lịch sử đã ngừng hoạt động) — dữ liệu theo dõi giao hàng khách hàng (đã xử lý ở bước 19) và 1 bảng tạm nội bộ thuần tuý (tự dựng lại hoàn toàn mỗi lần chạy, không lưu gì theo tháng) không cần nằm trong phạm vi, cùng với vài bảng tên tương tự nhưng không liên quan chức năng. Chuẩn bị sẵn 1 script chạy tay gồm đúng trình tự xoá-và-dựng-lại cần thiết, kèm bước kiểm tra đối chiếu trước/sau, có khuyến nghị mạnh nên compile bản sửa lỗi kiểm tra chống trùng ở bước 18 TRƯỚC, để lỗi gây mất dữ liệu hôm nay không thể tái diễn.
+
+**21. User áp dụng bản sửa và chạy khôi phục — kiểm chứng kết quả**
+
+Kiểm chứng: số liệu "nguyên liệu chuyển vào kho pha trộn" của tháng 8 giờ đã trở lại đúng khoảng 1,085 tấn — khớp chính xác với hồ sơ nguồn thật — xác nhận bản sửa hoạt động đúng, nguyên nhân gốc đã được giải quyết. Số liệu tồn đầu kỳ vẫn đúng, không đổi. Toàn bộ bản ghi nguyên liệu bông thô của cả 2 tháng giờ chỉ còn nguyên liệu đã duyệt — đạt đúng yêu cầu chính của ticket.
+
+Phát hiện thêm 1 điểm cần làm rõ: số liệu "nguyên liệu đã phân bổ cho lô thành phẩm" của tháng 8 thấp hơn khoảng 313 tấn so với con số tồn tại trước khi sự cố hôm nay bắt đầu. Điểm mấu chốt: đúng con số thấp hơn này đã xuất hiện y hệt cả ở lần chạy hỏng trước đó lẫn lần chạy đã sửa hôm nay — chứng minh nó không liên quan tới lỗi vừa sửa (nếu liên quan, con số phải phục hồi tăng lên cùng lúc số liệu chuyển kho được khôi phục, nhưng nó không đổi chút nào). Điều tra thêm phát hiện con số này trùng khớp về thời điểm với lúc tháng này được duyệt đóng sổ chính thức, và truy vết được về mặt cấu trúc rằng việc phân bổ nguyên liệu chỉ có thể lấy từ đúng lượng tồn gắn với lô sản xuất cụ thể đó, không được lấy tự do từ tổng tồn cả tháng — nghĩa là vẫn có thể xảy ra thiếu hụt cục bộ dù tổng thể dư dả. Kiểu này khớp với 1 vấn đề có sẵn từ trước đã được báo cáo riêng trong chính quá trình điều tra này (số dư mang qua tháng không bao giờ được trừ theo tiêu thụ thực) chứ không phải điều gì mới phát sinh hôm nay. Không ảnh hưởng tới yêu cầu chính của ticket và không nên chặn việc đóng sổ 10/09, nhưng đáng để báo riêng cho phía nghiệp vụ.
+
+**22. Phát hiện 1 hệ quả thật trên màn hình theo dõi xuất xứ nguyên liệu cho khách hàng — do chính bản sửa này gây ra**
+
+Phía nghiệp vụ báo qua chat nội bộ: 1 màn hình dùng để xem và chứng nhận xuất xứ (nước sản xuất) của bông nguyên liệu trong các lô hàng giao khách hàng đang hiện nhiều dòng không có xuất xứ và không có file chứng từ đính kèm, cho các lô giao trong tháng 8.
+
+Điều tra và xác nhận: màn hình này tra cứu xuất xứ và file chứng từ bằng cách, trong số các điều kiện khác, so khớp mã nguyên liệu ghi nhận lúc mua hàng với mã nguyên liệu hiện đang có trên bản ghi sản xuất. Vì bản sửa này đổi nhãn mã nguyên liệu trên bản ghi sản xuất (từ mã chưa duyệt sang mã đã duyệt), việc so khớp đó bị đứt đúng cho những lô mà bản sửa đã chạm tới — bản ghi mua hàng vẫn (đúng) giữ mã gốc, còn bản ghi sản xuất giờ đã mang mã mới, nên tra cứu không tìm thấy gì.
+
+Kiểm chứng bằng dữ liệu thật: mọi dòng bị ảnh hưởng trong ảnh chụp màn hình mà phía nghiệp vụ gửi đều thực sự được mua dưới mã nguyên liệu chưa duyệt ban đầu — xác nhận chắc chắn đây là hệ quả trực tiếp của bản sửa này, không phải 1 lỗi khác. Màn hình này tồn tại cụ thể để phục vụ chứng nhận xuất xứ cho mục đích hải quan/xuất khẩu, nơi xuất xứ hiển thị phải phản ánh đúng xuất xứ vật lý thật của nguyên liệu, không phải nhãn kế toán nội bộ dùng cho việc phân bổ sổ sách. Đã đưa ra 2 phương án cho user: (A) chỉnh lại cách tra cứu xuất xứ/chứng từ để chỉ so khớp theo số hiệu lô sản xuất, nhờ đó vẫn tìm đúng bản ghi mua hàng gốc và xuất xứ thật bất kể mã nguyên liệu đã bị đổi nhãn cho mục đích kế toán; (B) giữ nguyên hiện trạng màn hình. **User chọn phương án (A).**
+
+Trước khi thực hiện thay đổi, đã kiểm chứng đây là hoàn toàn an toàn: xác nhận không có số hiệu lô nào trong hồ sơ mua hàng từng gắn với hơn 1 mã nguyên liệu, và không có số hiệu lô nào gắn với hơn 1 chứng từ mua hàng/xuất xứ — nghĩa là cách tra cứu mới không thể tạo ra dòng trùng lặp hay sai lệch. Đã soạn sẵn phiên bản đã sửa cho logic đứng sau màn hình này.
+
+**23. Rà soát các màn hình liên quan — phát hiện thêm 5 chỗ khác dính đúng vấn đề này**
+
+Theo yêu cầu của user, kiểm tra thêm popup xem file chứng từ mở ra từ chính màn hình này, và phát hiện popup đó cũng dính đúng lỗi tương tự. Từ đó, rà soát toàn hệ thống mọi nơi dùng chung tổ hợp dữ liệu (bản ghi mua hàng gốc và bản ghi theo dõi sản xuất) và tìm được tổng cộng 6 nơi dính lỗi này: màn hình chính đã sửa ở bước 22, popup xem file, 1 màn hình theo dõi liên quan khác, 1 phiên bản cũ hơn của cùng màn hình theo dõi, 1 biến thể thứ 2 của popup file, và — đáng chú ý nhất — tính năng gửi báo cáo truy xuất nguồn gốc nguyên liệu trực tiếp cho khách hàng qua email. Đã áp dụng đúng 1 cách sửa giống hệt (chỉ so khớp theo số hiệu lô) cho cả 5 chỗ còn lại, theo đúng bước kiểm chứng an toàn đã xác nhận ở bước 22. Tính năng gửi email cho khách hàng đáng được lưu ý riêng: nếu không sửa, báo cáo truy xuất nguồn gốc gửi cho khách sẽ thiếu hoặc sai thông tin xuất xứ cho đúng những lô mà bản sửa này đã đổi nhãn.
+
+---
+
 **Các điểm còn cần user/phía DONGIL xác nhận:**
 1. Số hiệu lô hàng (lot number) gốc có được giữ nguyên khi đổi mã nguyên liệu hay không.
 2. Số lượng nguyên liệu chưa duyệt còn tồn (sẽ không bao giờ bị trừ nữa trên sổ sách của job
    này) có ảnh hưởng gì tới cách DONGIL theo dõi tồn kho/giá vốn theo từng loại nguyên liệu.
-3. **[GẤP, chưa thực hiện]** Cần chủ động chạy lại riêng cho tháng 8 trước ngày đóng sổ 10/09 —
-   bản sửa không tự động sửa lại dữ liệu cũ đã có sẵn.
-4. Xác nhận phạm vi áp dụng vĩnh viễn cho toàn bộ nhóm nguyên liệu bông thô, không giới hạn
+3. Xác nhận phạm vi áp dụng vĩnh viễn cho toàn bộ nhóm nguyên liệu bông thô, không giới hạn
    thời gian, có đúng ý muốn lâu dài hay không.
-5. Có muốn báo cáo riêng lỗi phụ phát hiện được ở bước 5 (số dư không được trừ theo tiêu thụ)
+4. Có muốn báo cáo riêng lỗi phụ phát hiện được ở bước 5 (số dư không được trừ theo tiêu thụ)
    thành 1 yêu cầu/ticket khác hay không.
-6. **[MỚI]** Phần xử lý dành cho kỳ đóng sổ THÁNG hiện không có tác dụng cho DONGIL — có cần
-   thiết phải duy trì bản sửa ở phần này không, hay chỉ để dự phòng cho nhà máy khác dùng chung?
-7. **[MỚI]** Có muốn bổ sung thêm 1 lớp kiểm tra dự phòng ở bước tổng hợp tạm thời (khuyến nghị
+5. Phần xử lý dành cho kỳ đóng sổ THÁNG hiện không có tác dụng cho DONGIL (không nơi nào gọi tới,
+   và bản thân nguồn dữ liệu snapshot của nó cũng thiếu — xem bước 15) — có cần thiết phải duy
+   trì bản sửa ở phần này không, hay chỉ để dự phòng cho nhà máy khác dùng chung?
+6. Có muốn bổ sung thêm 1 lớp kiểm tra dự phòng ở bước tổng hợp tạm thời (khuyến nghị từ bước 14,
    không bắt buộc) hay không?
-8. **[MỚI, cần theo dõi]** Xác nhận lại sau lần chạy đêm nay: dữ liệu tháng 9 có tự làm sạch hết
-   nguyên liệu chưa duyệt như mong đợi hay không.
+7. **[MỚI]** Khoảng chênh lệch khoảng 313 tấn ở số liệu phân bổ cho lô thành phẩm tháng 8 (bước
+   21, nghi liên quan tới vấn đề số dư mang qua tháng đã biết từ trước) — có cần điều tra sâu
+   thêm để định lượng chính xác tác động, hay chấp nhận đây là hệ quả của vấn đề đã biết và xử lý
+   chung khi báo cáo vấn đề đó?
+8. **[MỚI]** Sau 6 bản sửa ở bước 23 — có cần rà soát thêm các màn hình/tính năng khác (hiện chưa
+   kiểm tra) có thể cũng bị ảnh hưởng bởi việc đổi nhãn mã nguyên liệu không, hay 6 chỗ này đã là
+   toàn bộ phạm vi?

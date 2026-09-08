@@ -186,12 +186,155 @@ Kết luận tổng duyệt: code đã đúng và đầy đủ, đã live trên 
 
 ---
 
+**15. Kiểm tra an toàn trước khi chạy tay xử lý tháng 8 (trước khi tự chạy)**
+
+User hỏi tháng 8 đã trải qua monthly closing chưa, và đề xuất tự chạy tay `EXEC LG_PRO_DAILY_LOT_TRACKING('202608','MM')` rồi `('202609','DD')`.
+
+Query bảng `TLG_CL_CLOSING_MAT_DETAIL` (bảng snapshot đóng sổ) xác nhận tháng 8 đã có snapshot (551 dòng, `PHASE_NAME='WIP1'`, tạo lúc 2026-09-05 08:20-08:41, `SUM_BEGIN=119,277.13` khớp đúng số dư cuối tháng 7 trên ảnh PM0407 gốc). Phát hiện bất thường: **toàn bộ 551 dòng snapshot đều mang mã `USOT3137`, không còn dòng BRAMID nào** — trong khi `TLG_LOT_TRACKING_MAT` (bảng Lot Tracking thật) vẫn còn nguyên 1,093 dòng BRAMID cho tháng 8. Chưa rõ đây là do rule đã tự đúng ở nguồn khác hay do snapshot bị thiếu dữ liệu.
+
+Chạy 1 workflow 4-agent điều tra song song (`snapshot-origin`, `coverage-compare`, `mm-dry-run`, `approval-lock-check`) trước khi cho phép chạy MM. Kết quả:
+
+1. **Nguồn gốc snapshot**: `TLG_CL_CLOSING_MAT_DETAIL` được ghi bởi `LG_PRO_KBPR00300_7` (+ bản `_V2_7`) — 1 pipeline đóng sổ **hoàn toàn khác**, không liên quan gì tới `LG_PRO_DAILY_LOT_TRACKING`, không đọc `TLG_LOT_TRACKING_MAT`. Nguồn của nó là `TLG_CL_CLOSING_MAT_D` (bảng master đóng sổ riêng) + `TLG_ST_TRANSFER_D/M` (giao dịch chuyển kho MIX thật, `STATUS=3`) để tính tỷ lệ, cộng với carry-forward từ snapshot tháng trước của chính nó **chỉ khi `MAT_END_QTY>0`**. 65 lot BRAMID CÓ mặt trong snapshot tháng 7 (`SUM_OUT=505,088.0088` khớp gần đúng `OUTPUT_QTY` thật) nhưng `SUM_END=0` tại đó — theo đúng logic riêng của pipeline này, chúng "đã dùng hết" cuối tháng 7 nên không carry sang tháng 8 (không phải bug ở bước carry của pipeline đó).
+2. **Đối chiếu độ phủ**: snapshot 551 dòng tháng 8 chỉ có **90 LOT_NO riêng biệt** (từ `MIXEDF1-260729-01` đến `260831-04`, cutoff cứng đúng ngày 2026-07-29). `TLG_LOT_TRACKING_MAT` tháng 8 có **237 mixing lot** (65 BRAMID + 172 USOT3137). **147 mixing lot (mọi lot tạo từ 260627 đến 260728, gồm cả 65 lot BRAMID lẫn 82 lot USOT3137 thuần) hoàn toàn không có mặt trong snapshot dưới bất kỳ mã nào** — tổng snapshot chỉ bằng 47.6% IN / 77.7% OUT so với Lot Tracking thật.
+3. **Chạy thử (SELECT-only) 3 cursor của nhánh MM cho '202608'**: xác nhận sẽ KHÔNG lỗi exception (`SELECT INTO` chỉ dùng `MAX()`, luôn trả 1 dòng dù JOIN miss — không phải `NO_DATA_FOUND` như giả định ban đầu) nhưng sẽ tạo ra **1,054 dòng thay vì 3,546 dòng hiện có** — vì bước đầu tiên `UPDATE ... SET DEL_IF=PK WHERE STD_YM LIKE '202608%'` xoá mềm toàn bộ rồi chỉ dựng lại từ 90 LOT_NO có trong snapshot. **65 lot BRAMID (505,088kg) sẽ biến mất thật, không phải đổi mã.**
+4. **Trạng thái khoá/duyệt**: tháng 8 WIP1 hiện đã Approved (`TLG_CL_CLOSING_WIP_M`, `CONFIRM_DT=2026-09-05 08:57:38`, giống trạng thái tháng 7). `LG_PRO_DAILY_LOT_TRACKING` (toàn bộ 916 dòng, cả DD lẫn MM) hoàn toàn không đọc/ghi bảng `TLG_CL_CLOSING_WIP_M` — chạy lại không đụng/phá cờ Approved, nhưng cũng không có gì chặn chạy lại. Insert `TLG_LOT_TRACKING_HIS` đã bão hoà cho 202608 (62/62 dòng, có guard `NOT EXISTS`) nên chạy lại không tạo trùng lặp lịch sử đóng sổ.
+
+**Kết luận: `EXEC LG_PRO_DAILY_LOT_TRACKING('202608','MM')` không được chạy** — nhánh MM của DONGIL vẫn đúng như comment cũ của dev ("ko chay, cua dongil, can sua lai"): phụ thuộc vào 1 bảng snapshot của pipeline đóng sổ khác, hiện chỉ phủ 90/237 mixing lot của tháng 8. Đã soạn sẵn phương án dự phòng rủi ro thấp `results/fix_august_direct_update_OPTION_B.sql` — UPDATE trực tiếp 1,093 dòng BRAMID sang USOT3137 (không đổi số lượng).
+
+User bổ sung ngữ cảnh nghiệp vụ quan trọng: mọi bảng/store có tên chứa `LOT_TRACKING` thuộc 1 module độc lập, an toàn để xoá/sửa/chạy lại toàn bộ; về nghiệp vụ, tháng đã monthly closing bắt buộc phải có data Lot Tracking monthly chạy được cho tháng đó. Với thông tin này, khuyến nghị cuối: dùng **chính thủ tục đã patch, gọi với `P_TYPE='DD'`** cho cả 2 tháng (`EXEC LG_PRO_DAILY_LOT_TRACKING('202608','DD')` rồi `('202609','DD')`) thay vì `'MM'` — nhãn `'DD'`/`'MM'` chỉ là tên cơ chế tính (daily-mechanism vs monthly-snapshot-mechanism) trong code, không phải yêu cầu bắt buộc dùng `'MM'` cho tháng đã đóng sổ; nhánh DD mới là cơ chế đã audit đầy đủ (xem bước 14), tính từ dữ liệu nguồn thật cho toàn bộ 237 mixing lot.
+
+**16. User chạy `DD('202608')` rồi `DD('202609')` — phát hiện lỗi mới: mất dữ liệu ở DAILY/transfer-in**
+
+Verify sau khi chạy: nhóm nguyên liệu 27 (cotton) tháng 8/9 giờ chỉ còn USOT3137 (đúng mục tiêu chính của patch), nhưng khi so khối lượng trước/sau theo `STOCK_TYPE`:
+- `OPEN` tháng 8: 837 dòng / 1,209,469.13kg — khớp chính xác số liệu trước khi chạy (OK).
+- **`DAILY` tháng 8: 484 dòng/1,071,144.59kg (trước) → chỉ còn 12 dòng/26,823.08kg (sau) — mất ~97.5%.**
+- `MAPPING` tháng 8: 2,225 dòng/1,400,461.90kg (trước) → 1,588 dòng/1,087,663.36kg (sau) — mất ~22% (nghi ngờ ban đầu là hệ quả dây chuyền, xem bước 19 để biết kết luận cuối).
+
+Xác nhận nguồn dữ liệu chuyển kho thật (`TLG_ST_TRANSFER_D/M`, `STATUS=3`, `TR_DATE LIKE '202608%'`, `W.PROCESS_TYPE='MIXED'`) vẫn đầy đủ (~1,084,642.69kg) — không mất ở nguồn, nên lỗi nằm ở logic ghi, không phải mất dữ liệu nguồn.
+
+**Root cause xác minh bằng ví dụ cụ thể** (`SLIP_NO='TR26-0624'`, `TLG_WI_LINE_M_PK=8360`): cursor transfer-in (dòng ~413-442 nguồn) có điều kiện chống trùng:
+
+```sql
+AND NOT EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_MAT Z WHERE Z.DEL_IF = 0
+  AND Z.TLG_WI_LINE_M_PK = L.PK AND Z.TRIN_TYPE = 'I60' AND Z.SLIP_NO = M.SLIP_NO)
+```
+
+Điều kiện này **không lọc theo `STD_YM`, không phân biệt `STOCK_TYPE`**. `TRIN_TYPE='I60'` được set chung bởi cả block insert DAILY (dòng 455) lẫn block carry-over insert OPEN cho tháng sau (dòng 380). Vì tháng 9 đã chạy nightly liên tục (tới 2026-09-07 23:30) và carry-over cùng `SLIP_NO`/`WI_LINE` này sang OPEN của 202609, khi chạy lại `DD('202608')` hôm nay, `NOT EXISTS` thấy "đã có" (dòng OPEN của 202609) nên bỏ qua insert DAILY thật của tháng 8. Xác nhận trực tiếp trong DB: các dòng soft-delete của `SLIP_NO='TR26-0624'`/`WI_LINE=8360` cho STD_YM='202609' có `CRT_DT` mỗi đêm liên tục từ 2026-08-05 đến 2026-09-07, chứng minh cơ chế carry-over-reuse-SLIP_NO này đã tồn tại lâu.
+
+**Lỗi có sẵn từ trước, KHÔNG do patch USOT3137 gây ra** (patch Edit 5 chỉ sửa SELECT/GROUP BY ở vùng này, không đụng `NOT EXISTS`) — vô hại bấy lâu vì `_JOB` luôn chạy tuần tự đúng tháng hiện tại, chưa từng có kịch bản chạy lại 1 tháng đã qua trong khi tháng sau đã có data. Toàn bộ 484 dòng DAILY gốc của tháng 8 vẫn còn nguyên trong DB (soft-delete qua `DEL_IF`, không mất thật) — có thể khôi phục.
+
+**17. Rà soát toàn bộ 916 dòng procedure tìm mọi guard cùng dạng lỗi**
+
+Chạy 1 workflow điều tra: quét toàn bộ NOT EXISTS/NOT IN/MERGE/UNIQUE trong procedure — chỉ có đúng **4 guard constructs** trong toàn bộ 916 dòng:
+- Dòng 98 (preamble chung, marker ngày `TLG_LOT_TRACKING_HIS`) — AN TOÀN, khớp theo `YYYYMMDD` đầy đủ.
+- Dòng 438 (DD, cursor transfer-in DAILY) — NGUY HIỂM, root cause đã xác nhận ở bước 16.
+- Dòng 535 (DD, cursor PROD-income → `TLG_LOT_TRACKING_PROD`) — **NGUY HIỂM, cùng dạng lỗi, chưa từng trigger thật** (`TLG_LOT_TRACKING_PROD.STD_YM` tồn tại và được ghi bởi chính INSERT này ở dòng 492/497, nhưng guard không kiểm tra nó).
+- Dòng 567 (DD, cursor MAPPING/ration `CUR`) — AN TOÀN, có `A.STOCK_DATE = Z.TR_DATE` (so khớp ngày đầy đủ, mịn hơn tháng); guard này cũng bảo vệ luôn 2 INSERT O60 phía sau trong cùng vòng lặp (dòng 693, 837) vì kế thừa filter của `CUR`.
+
+Xác nhận khối OPEN carry-over (dòng 313-394) **không có guard nào cả** — insert vô điều kiện sau khi đã xoá mềm theo tháng — khớp đúng với kết quả thực nghiệm (không đổi trước/sau). Xác nhận nhánh MM (dòng 122-299) không có guard nào — miễn nhiễm hoàn toàn với lớp lỗi này bất kể thứ tự chạy.
+
+**18. Thiết kế và verify bản vá cho 2 guard nguy hiểm**
+
+Fix tối thiểu — thêm điều kiện lọc vào WHERE có sẵn, không đổi cấu trúc:
+
+```sql
+-- Guard dòng 438 (DAILY transfer-in) — Before:
+AND NOT EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_MAT Z WHERE Z.DEL_IF = 0
+  AND Z.TLG_WI_LINE_M_PK = L.PK AND Z.TRIN_TYPE = 'I60' AND Z.SLIP_NO = M.SLIP_NO)
+-- After:
+AND NOT EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_MAT Z WHERE Z.DEL_IF = 0
+  AND Z.TLG_WI_LINE_M_PK = L.PK AND Z.TRIN_TYPE = 'I60' AND Z.SLIP_NO = M.SLIP_NO
+  AND Z.STD_YM = L_MONTH AND Z.STOCK_TYPE = 'DAILY')
+
+-- Guard dòng 535 (PROD-income) — Before:
+AND NOT EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_PROD Z WHERE Z.DEL_IF = 0
+  AND Z.STOCK_NO = M.SLIP_NO AND Z.TLG_IT_ITEM_PK_PROD = D.ITEM_PK
+  AND Z.TLG_IT_ITEM_PK_MIX = C.CHILD_PK AND D.LOT_NO = Z.LOT AND STOCK_TYPE = 'PROD')
+-- After:
+AND NOT EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_PROD Z WHERE Z.DEL_IF = 0
+  AND Z.STOCK_NO = M.SLIP_NO AND Z.TLG_IT_ITEM_PK_PROD = D.ITEM_PK
+  AND Z.TLG_IT_ITEM_PK_MIX = C.CHILD_PK AND D.LOT_NO = Z.LOT AND STOCK_TYPE = 'PROD'
+  AND Z.STD_YM = L_MONTH)
+```
+
+Guard dòng 438 cần cả `STD_YM` lẫn `STOCK_TYPE` vì khối OPEN carry-over cùng tháng cũng ghi `TRIN_TYPE='I60'`/`STD_YM=L_MONTH` (chỉ khác `STOCK_TYPE='OPEN'`) — nếu chỉ lọc `STD_YM` vẫn có thể va nhầm vào chính dòng OPEN cùng tháng. Verify tính an toàn cho cả 2 kịch bản: (1) chạy lại đúng 1 tháng nhiều lần liên tiếp — vẫn idempotent vì `UPDATE ... SET DEL_IF=PK WHERE STD_YM LIKE L_MONTH||'%'` đã xoá mềm dòng active của tháng đó TRƯỚC khi 2 guard này chạy; (2) chạy lại 1 tháng quá khứ khi tháng sau đã có dữ liệu — nay được cho phép đúng vì dòng của tháng sau mang `STD_YM` khác.
+
+Re-verify độc lập cả 2 điểm sửa với live `ALL_SOURCE` (không tin lại transcription cũ) — khớp chính xác từng ký tự, không có drift. Ghép `results/LG_PRO_DAILY_LOT_TRACKING_PATCHED_v3_guardfix.sql` (full `CREATE OR REPLACE`, áp patch qua Edit tool exact-match — cả 2 lần thành công ngay lần đầu) và `results/LG_PRO_DAILY_LOT_TRACKING_live_before_guardfix_backup.sql` (đối chiếu). Verify cấu trúc: đếm `BEGIN`/`END`/`IF`/`LOOP`/`CASE` khớp tuyệt đối giữa 2 file (27/59/12/28/17), `diff` chỉ hiện đúng 2 vùng thay đổi dự kiến (2 comment + 2 mệnh đề AND), thân bài dài thêm đúng 2 dòng (917→919).
+
+**19. Điều tra vai trò của `TLG_LOT_TRACKING_GD_M/GD_D` (đứng sau màn hình melt060/melt070) trong kế hoạch khôi phục**
+
+Trước khi quyết định phương án khôi phục, kiểm tra xem 2 bảng "Goods-Delivery Lot Tracking" này có cần nằm trong phạm vi xoá+chạy-lại không (chúng đứng sau màn hình theo dõi xuất xứ nguyên liệu cho hàng đã giao). Tìm và đọc source `LG_SEL_MELT060_01` (dựng cây bên trái, gọi `LG_PRO_LOT_TRACKING_GD_M` làm bước đầu tiên để "rebuild-on-open" mỗi khi user search theo khoảng ngày), `LG_PRO_LOT_TRACKING_GD_M`/`LG_PRO_LOT_TRACKING_GD_D` (2 procedure RIÊNG BIỆT, khác hoàn toàn `LG_PRO_DAILY_LOT_TRACKING`).
+
+Phát hiện chính:
+- `LG_PRO_DAILY_LOT_TRACKING` **không tự INSERT** `MAT_ITEM`/`MAT_LOT`/`MAT_KG` vào `TLG_LOT_TRACKING_GD_D` — việc này do `LG_PRO_LOT_TRACKING_GD_D` làm, đọc trực tiếp từ `TLG_LOT_TRACKING_MAT WHERE TROUT_TYPE='O60'` (chính bảng bị bug BRAMID/USOT3137) — nên `GD_D.MAT_ITEM` liên quan trực tiếp tới bug đang sửa.
+- `LG_PRO_DAILY_LOT_TRACKING` có tự dọn `GD_M/GD_D` (dòng 62-79) nhưng CHỈ xoá mềm `LEVEL_TYPE='LOT'`, và row có `MAIL_YN='Y'` (đã gửi mail/morningmate) sẽ KHÔNG bao giờ bị đụng tới (không lọc theo tháng) — đây chỉ là bước dọn dẹp, không tự INSERT lại gì; việc rebuild thật sự chỉ xảy ra khi ai đó mở lại màn hình melt060/melt070 cho đúng khoảng ngày.
+- Phát hiện phụ: `TLG_LOT_TRACKING_GD_M.DELI_DATE` luôn rỗng (bug riêng trong `LG_PRO_LOT_TRACKING_GD_M` dòng 30: cursor hardcode `'' AS OUT_DATE` thay vì `M.OUT_DATE`) — không thể dùng cột này để lọc DELETE theo tháng, phải join qua `TLG_GD_OUTGO_M.OUT_DATE` bằng `TLG_GD_OUTGO_M_PK`.
+- Thực nghiệm: kiểm tra trực tiếp cho khoảng 2026-08-01 đến 09-08 — toàn bộ 927/927 dòng GD_M `LEVEL_TYPE='LOT'` liên quan đã bị xoá mềm (`DEL_IF<>0`), tất cả đều `MAIL_YN='N'` — đã bị quét sạch như hệ quả phụ của chính 2 lần `EXEC DD` chạy tay ở bước 16. Không cần DELETE tay thêm cho `GD_M/GD_D` lần này, nhưng đây chỉ là may mắn cho đúng lần này (chưa có row `MAIL_YN='Y'` nào trong khoảng), không nên dựa vào cơ chế tự dọn này cho các lần sau.
+
+**20. User quyết định hướng khôi phục: DELETE sạch tháng 8+9 rồi chạy lại DD**
+
+User chỉ đạo xoá toàn bộ data tháng 8+9 trên mọi bảng `LOT_TRACKING` liên quan, sau đó chạy lại DD. Rà soát toàn bộ 9 bảng có tên chứa `LOT_TRACKING`: chỉ **3 bảng** có cột `STD_YM` VÀ thực sự được `LG_PRO_DAILY_LOT_TRACKING` ghi (xác nhận qua chính block `TRUNCATE` comment sẵn ở đầu source, dòng 5-9): `TLG_LOT_TRACKING_MAT` (92,630 dòng thg8+9, tính cả các generation đã soft-delete), `TLG_LOT_TRACKING_PROD` (13,096 dòng), `TLG_LOT_TRACKING_HIS` (122 dòng). `TLG_LOT_TRACKING_GD_M/GD_D` (đã điều tra ở bước 19 — không cần xoá tay), `TLG_LOT_TRACKING_TEMP` (không có cột tháng nào, tự rebuild mỗi lần chạy), `TLG_GD_LOT_TRACKING_D/M`/`TLG_LOT_TRACKING_PROD_BC` (tên giống nhưng không được procedure này đụng tới) — không nằm trong phạm vi.
+
+Soạn `results/recovery_delete_and_rerun_202608_202609.sql`: `DELETE` (hard delete) cả 3 bảng `WHERE STD_YM IN ('202608','202609')`, verify đã sạch, rồi `EXEC LG_PRO_DAILY_LOT_TRACKING('202608','DD')` → `('202609','DD')`, rồi verify kết quả cuối. Khuyến nghị kèm theo: vẫn nên compile patch guard-fix (bước 18) TRƯỚC khi chạy script này — xoá sạch tháng 9 giải quyết được sự cố hôm nay (không còn dòng nào để guard lỗi va phải), nhưng bug gốc vẫn tồn tại nếu không vá, sẽ tái phát nếu sau này chạy lại 1 tháng cũ bất kỳ trong khi tháng sau đã có dữ liệu.
+
+**21. User compile patch guard-fix + chạy recovery script — verify kết quả**
+
+Verify: DAILY tháng 8 giờ **489 dòng/1,084,642.69kg — khớp chính xác** với tổng nguồn thật (`TLG_ST_TRANSFER_D/M`) → xác nhận guard-fix hoạt động đúng, bug gốc đã hết. `OPEN` 837 dòng/1,209,469.13kg (không đổi). Toàn bộ nhóm cotton (group 27) chỉ còn USOT3137, không còn BRAMID — đúng mục tiêu chính CESM-418.
+
+Phát hiện thêm 1 điểm cần làm rõ: `MAPPING` (ration) tháng 8 = 1,588 dòng/1,087,663.36kg — thấp hơn ~313K kg so với con số gốc trước sự cố hôm nay (2,225 dòng/1,400,461.90kg). Điểm mấu chốt: con số 1,588/1,087,663.36kg này **giống hệt** lần chạy hỏng lúc trước (khi DAILY chỉ có 12 dòng) — chứng minh khoản thiếu hụt MAPPING không liên quan tới bug guard vừa sửa (nếu liên quan, phải phục hồi tăng theo DAILY, nhưng không đổi 1kg nào).
+
+Launch workflow điều tra riêng (3 agent song song) — cả 3 fail vì chạm giới hạn phiên làm việc (session limit), không phải lỗi logic. Chuyển sang điều tra thủ công trực tiếp:
+- `TLG_PR_PROD_INCOME_M/D` tháng 8, `STATUS=3`: 832 chứng từ / 3,257,790.53kg, `MAX_MOD=2026-09-05 08:57:35` — trùng khớp gần như tuyệt đối với thời điểm đóng sổ WIP1 tháng 8 được Approve (`CONFIRM_DT=2026-09-05 08:57:38`) — cho thấy các chứng từ này bị chạm vào như 1 phần của chính quy trình đóng sổ, không phải dấu hiệu sửa/xoá bất thường. `STATUS=1` (chưa duyệt) chỉ 6 chứng từ/4,642.92kg — quá nhỏ để giải thích khoảng thiếu 313K kg.
+- Đọc trực tiếp source cơ chế ration (dòng ~613-800): xác nhận ration cho 1 (`SLIP_NO`, `WI_LINE`, `ITEM`) chỉ được rút tồn từ đúng `TLG_LOT_TRACKING_TEMP` rows khớp chính xác `WI_LINE_M_PK` đó (dòng 670-671), không rút tự do từ tổng tồn kho toàn tháng. Nghĩa là dù tổng cung (`OPEN+DAILY = 2,294,111.82kg` hôm nay, thậm chí cao hơn historical ~2,280,613.72kg) rất dư dả, vẫn có thể xảy ra thiếu hụt cục bộ nếu tồn kho phân bổ không đúng theo từng `WI_LINE` cụ thể cần.
+
+**Kết luận**: khoảng thiếu 313K kg ở MAPPING nhiều khả năng là biểu hiện của bug carry-over đã biết từ trước (bước 5: "JOIN sai... balance carry-over không bao giờ được trừ theo tiêu thụ thực") kết hợp với tính chất "path-dependent" của thuật toán ration (chạy lại 1 lần duy nhất từ đầu cho ra kết quả khác với chuỗi nhiều lần chạy tuần tự mỗi đêm trong suốt tháng 8 thực tế) — KHÔNG phải lỗi mới do patch hôm nay gây ra (bằng chứng: giống hệt cả ở lần chạy hỏng lẫn lần chạy đã sửa). Không vi phạm mục tiêu chính CESM-418. Cần báo cho business/DBA như 1 phát hiện riêng, không chặn việc đóng sổ 10/09.
+
+**22. Phát hiện regression thật trên màn hình melt070 (Deli Lot Tracking V3) — do chính patch CESM-418 gây ra**
+
+Business (qua chat nội bộ) báo màn hình melt070 (`/me/lt/melt070`) hiện nhiều dòng "Origin: none" + "0 files" cho tháng 8.
+
+Đọc source `LG_SEL_MELT070_02`: Origin/file được tra bằng JOIN `TLG_KB_COTTON_INCOME_D` (ghi nhận nhập kho — giữ nguyên mã nguyên liệu GỐC, không bị patch đụng tới) với `TLG_LOT_TRACKING_GD_D` (lấy mã nguyên liệu từ `TLG_LOT_TRACKING_MAT` — đã bị patch đổi BRAMID→USOT3137) theo **cả mã nguyên liệu lẫn `LOT_NO`** (2 điểm: dòng ~61 trong CTE `TBL_LOT_INFO`, dòng ~204 ở LEFT JOIN chính):
+
+```sql
+-- CTE TBL_LOT_INFO, dòng ~61 (before):
+AND DI.TLG_IT_ITEM_PK = X1.TLG_IT_ITEM_PK_MAT
+AND DI.LOT_NO = TRIM(X1.MAT_LOT)
+-- LEFT JOIN chính, dòng ~204 (before):
+AND L.TLG_IT_ITEM_PK_MAT (+) = Z2.TLG_IT_ITEM_PK_MAT
+AND L.MAT_LOT (+) = TRIM(Z2.MAT_LOT)
+```
+
+Khi mã không còn khớp (121 BRAMID ≠ 122 USOT3137), join trả NULL → Origin=NULL. Fallback heuristic (`ITEM_CODE LIKE 'USA%'`) cũng không cứu được vì `'USOT3137'` không khớp pattern `'USA%'` (bắt đầu bằng "USO" chứ không phải "USA").
+
+**Verify bằng data thật**: cả 4 mẫu `LOT_NO` hiện "none/0 files" trên ảnh chụp màn hình (`203/1076/26-01`, `303C/665/26-01`, `402A/660/26-01`, `402C/219/26-01`) đều **thực sự được mua/ghi nhận là BRAMID** trong `TLG_KB_COTTON_INCOME_D` — xác nhận 100% đây là hệ quả trực tiếp từ patch CESM-418.
+
+Màn hình này có nút `AUSTRALIA/BRAZIL/USA_GIN_CODE` — phục vụ chứng nhận xuất xứ bông cho hải quan/xuất khẩu, nơi Origin phải phản ánh đúng xuất xứ vật lý thật, không phải nhãn kế toán nội bộ đã chuẩn hoá. Đã báo 2 hướng cho user: (A) sửa JOIN của melt070 chỉ khớp theo `LOT_NO` (giữ nguyên sổ sách USOT3137 nhưng hiện đúng xuất xứ thật), (B) giữ nguyên hiện trạng. **User chọn (A).**
+
+Verify an toàn trước khi sửa: xác nhận **0 `LOT_NO` nào trong `TLG_KB_COTTON_INCOME_D` gắn với >1 mã nguyên liệu khác nhau**, và **0 `LOT_NO` nào gắn với >1 PO_DOC/Origin khác nhau** — bỏ điều kiện so khớp mã nguyên liệu khỏi join hoàn toàn an toàn, không tạo fan-out/trùng dòng. Soạn `results/LG_SEL_MELT070_02_PATCHED_origin_join_fix.sql` — `CREATE OR REPLACE` đầy đủ, 2 điểm sửa đánh dấu `-- [PATCH MELT070-ORIGIN-FIX]`, chỉ bỏ đúng điều kiện so khớp mã nguyên liệu, giữ nguyên `LOT_NO` làm khoá join.
+
+**23. Rà soát toàn schema — phát hiện thêm 5 procedure khác cùng lỗi**
+
+User yêu cầu kiểm tra thêm "store popup" (procedure đứng sau popup xem file mở từ nút "X files" trên lưới). Tìm ra `LG_SEL_MELT060_02_FILES` dính chính xác cùng lỗi. Rà soát toàn schema (mọi object cùng dùng chung `TLG_KB_COTTON_INCOME_D` VÀ `TLG_LOT_TRACKING_GD_D`) cho ra tổng cộng **6 procedure** dính lỗi:
+
+| Procedure | Màn hình/chức năng | Số điểm lỗi |
+|---|---|---|
+| `LG_SEL_MELT070_02` | Grid chính melt070 | 2 (đã vá bước 22) |
+| `LG_SEL_MELT060_02_FILES` | Popup xem file | 1 |
+| `LG_SEL_MELT021_02` | Màn hình melt021 | 2 |
+| `LG_SEL_MELT060_02` | Grid chính melt060 (V2 của melt070) | 2 |
+| `LG_SEL_MO00010` | Popup file (biến thể, dùng `IN` subquery thay vì `EXISTS`) | 1 |
+| `LG_SEL_MELT060_SEND_FLOW_MAIL` | Gửi mail traceability report cho khách hàng | 4 (2 khối trùng lặp nhánh `'FLOW'`/`'MAIL'`, mỗi khối 2 điểm) |
+
+Lấy full source từng procedure, áp dụng đúng 1 nguyên tắc sửa đã xác nhận ở bước 22 (bỏ điều kiện so khớp mã nguyên liệu, chỉ giữ `LOT_NO`). Verify lại bằng grep trên cả 6 file: toàn bộ điều kiện mã nguyên liệu đã bỏ đúng chỗ, toàn bộ điều kiện `LOT_NO` vẫn còn nguyên. Đã soạn đủ 5 file patch còn lại (`LG_SEL_MELT060_02_FILES_PATCHED_origin_join_fix.sql`, `LG_SEL_MELT021_02_PATCHED_origin_join_fix.sql`, `LG_SEL_MELT060_02_PATCHED_origin_join_fix.sql`, `LG_SEL_MO00010_PATCHED_origin_join_fix.sql`, `LG_SEL_MELT060_SEND_FLOW_MAIL_PATCHED_origin_join_fix.sql`) — cộng với file đã soạn ở bước 22, tổng 6 file sẵn sàng compile. Đáng chú ý `LG_SEL_MELT060_SEND_FLOW_MAIL` là procedure gửi email traceability report trực tiếp cho khách hàng — nếu không vá, email gửi ra sẽ thiếu/sai thông tin xuất xứ cho đúng những lot đã bị đổi mã.
+
+---
+
 **Các điểm còn cần user/phía nghiệp vụ xác nhận:**
 1. Việc giữ nguyên `LOT_NO` sau khi đổi mã nguyên liệu có chấp nhận được không, hay cần 1 số tham chiếu lot khác.
 2. Số dư sổ sách BRAMID bị "mồ côi" sau đó (không bao giờ được job này tiêu thụ nữa) có ảnh hưởng gì tới tồn kho/giá thành phía sau hay không.
-3. **[CẤP BÁCH, chưa thực hiện]** Cần gọi tay `EXEC LG_PRO_DAILY_LOT_TRACKING('202608', 'DD');` để xử lý tháng 8 trước ngày đóng sổ 10/09 — patch không tự sửa dữ liệu cũ.
-4. Xác nhận phạm vi áp dụng vĩnh viễn, không giới hạn thời gian (toàn bộ 8 mã trong nhóm nguyên liệu 27) có đúng là hành vi mong muốn lâu dài hay không.
-5. Có nên báo cáo riêng lỗi `OUTER JOIN` không liên quan phát hiện ở bước 5 thành 1 ticket khác hay không.
-6. **[MỚI]** Nhánh MM hiện không có tác dụng cho DONGIL (không object nào gọi tới) — có cần thiết phải duy trì patch trên nhánh này không, hay chỉ để phòng hờ cho site khác dùng chung procedure?
-7. **[MỚI]** Có muốn bổ sung 1 lớp CASE WHEN phòng thủ tại bước build `TLG_LOT_TRACKING_TEMP` (khuyến nghị của Agent 2, không bắt buộc) hay không?
-8. **[MỚI, cần theo dõi]** Xác nhận lại sau nightly đêm nay (08/09 → 09/09): dữ liệu tháng 9 có tự làm sạch hết BRAMID như thiết kế hay không.
+3. Xác nhận phạm vi áp dụng vĩnh viễn, không giới hạn thời gian (toàn bộ 8 mã trong nhóm nguyên liệu 27) có đúng là hành vi mong muốn lâu dài hay không.
+4. Có nên báo cáo riêng lỗi `OUTER JOIN` không liên quan phát hiện ở bước 5 thành 1 ticket khác hay không.
+5. Nhánh MM hiện không có tác dụng cho DONGIL (không object nào gọi tới, và bản thân nguồn dữ liệu snapshot của nó cũng thiếu — xem bước 15) — có cần thiết phải duy trì patch trên nhánh này không, hay chỉ để phòng hờ cho site khác dùng chung procedure?
+6. Có muốn bổ sung 1 lớp CASE WHEN phòng thủ tại bước build `TLG_LOT_TRACKING_TEMP` (khuyến nghị của Agent 2 ở bước 14, không bắt buộc) hay không?
+7. **[MỚI]** Khoảng chênh lệch ~313K kg ở MAPPING (bước 21, nghi liên quan bug carry-over cũ đã biết) — có cần điều tra sâu thêm để định lượng chính xác tác động, hay chấp nhận đây là hệ quả của bug đã biết và xử lý chung khi báo cáo bug đó?
+8. **[MỚI]** Sau khi compile 6 file patch ở bước 23 — có cần rà soát thêm các màn hình/procedure KHÁC (ngoài phạm vi `TLG_KB_COTTON_INCOME_D`+`TLG_LOT_TRACKING_GD_D`) có thể cũng bị ảnh hưởng bởi việc đổi mã nguyên liệu không, hay 6 procedure này đã là toàn bộ phạm vi?

@@ -186,12 +186,155 @@ Audit conclusion: the code is correct and complete, and is live in production, b
 
 ---
 
+**15. Safety check before manually running the August fix (before executing anything)**
+
+User asked whether August had already gone through monthly closing, and proposed manually running `EXEC LG_PRO_DAILY_LOT_TRACKING('202608','MM')` followed by `('202609','DD')`.
+
+Queried table `TLG_CL_CLOSING_MAT_DETAIL` (the closing snapshot table) — confirmed August already has a snapshot (551 rows, `PHASE_NAME='WIP1'`, created 2026-09-05 08:20-08:41, `SUM_BEGIN=119,277.13` exactly matching July's ending balance shown in the original PM0407 screenshot). Found an anomaly: **all 551 snapshot rows carried item code `USOT3137`, with zero BRAMID rows** — while `TLG_LOT_TRACKING_MAT` (the real Lot Tracking table) still had all 1,093 BRAMID rows for August. Unclear whether this meant the rule was already correct at a different source, or the snapshot was simply missing data.
+
+Ran a 4-agent parallel investigation workflow (`snapshot-origin`, `coverage-compare`, `mm-dry-run`, `approval-lock-check`) before allowing MM to run. Findings:
+
+1. **Snapshot origin**: `TLG_CL_CLOSING_MAT_DETAIL` is written by `LG_PRO_KBPR00300_7` (+ its `_V2_7` twin) — a **completely separate** closing pipeline, unrelated to `LG_PRO_DAILY_LOT_TRACKING`, and it never reads `TLG_LOT_TRACKING_MAT`. Its sources are `TLG_CL_CLOSING_MAT_D` (a separate master closing table) + `TLG_ST_TRANSFER_D/M` (real warehouse transfer transactions into the MIX warehouse, `STATUS=3`) for ratio computation, plus its own prior-month snapshot carried forward **only when `MAT_END_QTY>0`**. All 65 BRAMID lots ARE present in July's snapshot (`SUM_OUT=505,088.0088`, closely matching the real `OUTPUT_QTY`) but `SUM_END=0` there — per this pipeline's own logic they were "fully consumed" by end of July, so they correctly did not carry into August (not a bug in that pipeline's own carry-forward step).
+2. **Coverage comparison**: the 551-row August snapshot covers only **90 distinct LOT_NO values** (ranging `MIXEDF1-260729-01` to `260831-04`, a hard cutoff at 2026-07-29). `TLG_LOT_TRACKING_MAT` for August has **237 mixing lots** (65 BRAMID + 172 USOT3137). **147 mixing lots (every lot created 260627 through 260728, including all 65 BRAMID lots plus 82 pure-USOT3137 lots) are entirely absent from the snapshot under any code** — the snapshot's total is only 47.6% of true IN / 77.7% of true OUT.
+3. **Dry-ran (SELECT-only) the MM branch's 3 cursors for '202608'**: confirmed it would NOT raise an exception (the `SELECT INTO` uses only `MAX()` aggregates, which always return one row even on a join miss — not the `NO_DATA_FOUND` originally assumed) but would produce **1,054 rows instead of the 3,546 currently present** — because the first step, `UPDATE ... SET DEL_IF=PK WHERE STD_YM LIKE '202608%'`, soft-deletes everything and then rebuilds only from the 90 LOT_NOs present in the snapshot. **The 65 BRAMID lots (505,088 kg) would genuinely vanish, not be relabeled.**
+4. **Approval/lock status**: August WIP1 is already Approved (`TLG_CL_CLOSING_WIP_M`, `CONFIRM_DT=2026-09-05 08:57:38`, same state as July). `LG_PRO_DAILY_LOT_TRACKING` (all 916 lines, both DD and MM) never reads or writes `TLG_CL_CLOSING_WIP_M` at all — re-running does not touch or corrupt the Approved flag, but nothing blocks a re-run either. The `TLG_LOT_TRACKING_HIS` insert is already saturated for 202608 (62/62 rows, guarded by a `NOT EXISTS`) so re-running creates no duplicate closing-history rows.
+
+**Conclusion: `EXEC LG_PRO_DAILY_LOT_TRACKING('202608','MM')` must NOT be run** — DONGIL's MM branch is exactly as the old developer comment says ("does not run, for dongil, needs fixing"): it depends on a snapshot table from an unrelated closing pipeline that currently covers only 90/237 of August's mixing lots. Prepared a lower-risk fallback, `results/fix_august_direct_update_OPTION_B.sql` — a direct UPDATE of the 1,093 BRAMID rows to USOT3137 (no quantity change).
+
+User added important business context: every table/procedure whose name contains `LOT_TRACKING` belongs to one independent module, safe to fully clear/modify/rebuild; and from a business standpoint, a month that has already gone through monthly closing must have working Lot Tracking monthly data for that month. Given this, final recommendation: use the **already-patched procedure, called with `P_TYPE='DD'`** for both months (`EXEC LG_PRO_DAILY_LOT_TRACKING('202608','DD')` then `('202609','DD')`) instead of `'MM'` — the `'DD'`/`'MM'` labels are just internal computation-mechanism names (daily-mechanism vs monthly-snapshot-mechanism), not a hard requirement to use `'MM'` for an already-closed month; the DD branch is the one that was fully audited (see step 14), computing from real source data across all 237 mixing lots.
+
+**16. User ran `DD('202608')` then `DD('202609')` — discovered a new bug: data loss in DAILY/transfer-in**
+
+Post-run verification: raw-cotton item group 27 for August/September now shows only USOT3137 (the patch's core goal, achieved), but comparing quantities before/after by `STOCK_TYPE`:
+- `OPEN` for August: 837 rows / 1,209,469.13 kg — exactly matches the pre-run figure (OK).
+- **`DAILY` for August: 484 rows / 1,071,144.59 kg (before) → only 12 rows / 26,823.08 kg (after) — a ~97.5% loss.**
+- `MAPPING` for August: 2,225 rows / 1,400,461.90 kg (before) → 1,588 rows / 1,087,663.36 kg (after) — a ~22% drop (initially suspected to be a cascading effect; see step 19 for the final conclusion).
+
+Confirmed the true warehouse-transfer source data (`TLG_ST_TRANSFER_D/M`, `STATUS=3`, `TR_DATE LIKE '202608%'`, `W.PROCESS_TYPE='MIXED'`) remained fully intact (~1,084,642.69 kg) — nothing was lost at the source, so the defect had to be in the write logic, not missing source data.
+
+**Root cause confirmed with a concrete example** (`SLIP_NO='TR26-0624'`, `TLG_WI_LINE_M_PK=8360`): the transfer-in cursor (source lines ~413-442) has a duplicate-prevention condition:
+
+```sql
+AND NOT EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_MAT Z WHERE Z.DEL_IF = 0
+  AND Z.TLG_WI_LINE_M_PK = L.PK AND Z.TRIN_TYPE = 'I60' AND Z.SLIP_NO = M.SLIP_NO)
+```
+
+This condition **does not filter by `STD_YM` and does not distinguish `STOCK_TYPE`**. `TRIN_TYPE='I60'` is set by both the DAILY insert block (line 455) AND the OPEN carry-over insert block for the following month (line 380). Because September had already been running nightly continuously (through 2026-09-07 23:30) and its carry-over reused the same `SLIP_NO`/`WI_LINE` into a September OPEN row, when `DD('202608')` was re-run, the `NOT EXISTS` found "already present" (the September OPEN row) and skipped inserting August's real DAILY row. Confirmed directly in the DB: the soft-deleted rows for `SLIP_NO='TR26-0624'`/`WI_LINE=8360` under STD_YM='202609' show a `CRT_DT` every single night from 2026-08-05 through 2026-09-07, proving this carry-over-reuses-SLIP_NO mechanism has existed for a long time.
+
+**This is a pre-existing bug, NOT caused by the USOT3137 patch** (Edit 5 only touched this cursor's SELECT/GROUP BY, never its `NOT EXISTS`) — it was harmless until now because `_JOB` always ran sequentially for the current month, and there had never before been a scenario of re-running a past month while a later month already had data. All 484 of August's original DAILY rows are still physically intact in the DB (soft-deleted via `DEL_IF`, not truly lost) — recoverable.
+
+**17. Swept the full 916-line procedure for every guard sharing the same bug class**
+
+Ran an investigation workflow: scanned the entire procedure for every NOT EXISTS/NOT IN/MERGE/UNIQUE construct — found exactly **4 guard constructs** in all 916 lines:
+- Line 98 (shared preamble, `TLG_LOT_TRACKING_HIS` day-marker) — SAFE, matches a full `YYYYMMDD` date.
+- Line 438 (DD, DAILY transfer-in cursor) — DANGEROUS, confirmed root cause in step 16.
+- Line 535 (DD, PROD-income cursor → `TLG_LOT_TRACKING_PROD`) — **DANGEROUS, same defect shape, never yet actually triggered** (`TLG_LOT_TRACKING_PROD.STD_YM` exists and is written by this same INSERT at line 492/497, but the guard never checks it).
+- Line 567 (DD, MAPPING/ration cursor `CUR`) — SAFE, includes `A.STOCK_DATE = Z.TR_DATE` (full calendar-date match, finer-grained than month); this guard also protects the two O60 INSERTs later in the same loop (lines 693, 837) since they inherit `CUR`'s filter.
+
+Confirmed the OPEN carry-over block (lines 313-394) has **no guard at all** — it inserts unconditionally after the month-scoped soft-delete — matching the empirical result (unchanged before/after). Confirmed the MM branch (lines 122-299) has zero guards — structurally immune to this entire bug class regardless of run order.
+
+**18. Designed and verified the fix for the 2 dangerous guards**
+
+Minimal fix — adding a filter condition to an existing WHERE clause, no structural change:
+
+```sql
+-- Guard at line 438 (DAILY transfer-in) — Before:
+AND NOT EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_MAT Z WHERE Z.DEL_IF = 0
+  AND Z.TLG_WI_LINE_M_PK = L.PK AND Z.TRIN_TYPE = 'I60' AND Z.SLIP_NO = M.SLIP_NO)
+-- After:
+AND NOT EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_MAT Z WHERE Z.DEL_IF = 0
+  AND Z.TLG_WI_LINE_M_PK = L.PK AND Z.TRIN_TYPE = 'I60' AND Z.SLIP_NO = M.SLIP_NO
+  AND Z.STD_YM = L_MONTH AND Z.STOCK_TYPE = 'DAILY')
+
+-- Guard at line 535 (PROD-income) — Before:
+AND NOT EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_PROD Z WHERE Z.DEL_IF = 0
+  AND Z.STOCK_NO = M.SLIP_NO AND Z.TLG_IT_ITEM_PK_PROD = D.ITEM_PK
+  AND Z.TLG_IT_ITEM_PK_MIX = C.CHILD_PK AND D.LOT_NO = Z.LOT AND STOCK_TYPE = 'PROD')
+-- After:
+AND NOT EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_PROD Z WHERE Z.DEL_IF = 0
+  AND Z.STOCK_NO = M.SLIP_NO AND Z.TLG_IT_ITEM_PK_PROD = D.ITEM_PK
+  AND Z.TLG_IT_ITEM_PK_MIX = C.CHILD_PK AND D.LOT_NO = Z.LOT AND STOCK_TYPE = 'PROD'
+  AND Z.STD_YM = L_MONTH)
+```
+
+The line-438 guard needs both `STD_YM` and `STOCK_TYPE` because the same-month OPEN carry-over block also writes `TRIN_TYPE='I60'`/`STD_YM=L_MONTH` (differing only in `STOCK_TYPE='OPEN'`) — filtering on `STD_YM` alone could still wrongly collide with that same month's own OPEN row. Verified safety for both scenarios: (1) re-running the same month multiple times in a row stays idempotent, since `UPDATE ... SET DEL_IF=PK WHERE STD_YM LIKE L_MONTH||'%'` already soft-deletes that month's active rows BEFORE either guard runs; (2) re-running a past month while a later month already has data is now correctly allowed, since the later month's rows carry a different `STD_YM`.
+
+Independently re-verified both edit points against live `ALL_SOURCE` (not trusting the earlier transcription) — matched character-for-character, no drift. Assembled `results/LG_PRO_DAILY_LOT_TRACKING_PATCHED_v3_guardfix.sql` (full `CREATE OR REPLACE`, edits applied via Edit-tool exact-string-match — both succeeded on the first try) and `results/LG_PRO_DAILY_LOT_TRACKING_live_before_guardfix_backup.sql` (reference copy). Verified structure: `BEGIN`/`END`/`IF`/`LOOP`/`CASE` counts matched exactly between the two files (27/59/12/28/17), a `diff` showed only the 2 intended change regions (2 comments + 2 added AND clauses), body grew by exactly 2 lines (917→919).
+
+**19. Investigated whether `TLG_LOT_TRACKING_GD_M/GD_D` (backing the melt060/melt070 screens) needed to be part of the recovery**
+
+Before deciding on the recovery approach, checked whether these two "Goods-Delivery Lot Tracking" tables (which back the raw-material-origin tracking screen for shipped goods) needed to be in scope for delete+rerun. Found and read `LG_SEL_MELT060_01` (builds the left-side tree, calls `LG_PRO_LOT_TRACKING_GD_M` as its first step to "rebuild-on-open" whenever a user searches a date range), and `LG_PRO_LOT_TRACKING_GD_M`/`LG_PRO_LOT_TRACKING_GD_D` (two SEPARATE procedures, entirely distinct from `LG_PRO_DAILY_LOT_TRACKING`).
+
+Key findings:
+- `LG_PRO_DAILY_LOT_TRACKING` does **not itself insert** `MAT_ITEM`/`MAT_LOT`/`MAT_KG` into `TLG_LOT_TRACKING_GD_D` — that is done by `LG_PRO_LOT_TRACKING_GD_D`, which reads directly from `TLG_LOT_TRACKING_MAT WHERE TROUT_TYPE='O60'` (the same table affected by the BRAMID/USOT3137 bug) — so `GD_D.MAT_ITEM` is directly tied to the bug being fixed.
+- `LG_PRO_DAILY_LOT_TRACKING` does have its own cleanup of `GD_M/GD_D` (lines 62-79), but it ONLY soft-deletes `LEVEL_TYPE='LOT'` rows, and a row with `MAIL_YN='Y'` (already emailed/notified via morningmate) is NEVER touched by it (no month filter) — this is only a cleanup step, it never re-inserts anything; the actual rebuild only happens when someone reopens the melt060/melt070 screen for that date range.
+- Secondary finding: `TLG_LOT_TRACKING_GD_M.DELI_DATE` is always blank (a separate bug in `LG_PRO_LOT_TRACKING_GD_M` at line 30: its cursor hardcodes `'' AS OUT_DATE` instead of `M.OUT_DATE`) — this column cannot be used to scope a month-based DELETE; the correct scope requires joining through `TLG_GD_OUTGO_M.OUT_DATE` via `TLG_GD_OUTGO_M_PK`.
+- Empirically: checked the 2026-08-01 through 09-08 range directly — all 927/927 relevant GD_M `LEVEL_TYPE='LOT'` rows were already soft-deleted (`DEL_IF<>0`), all `MAIL_YN='N'` — already swept as a side effect of the two `EXEC DD` runs from step 16. No manual DELETE was needed for `GD_M/GD_D` this time, but this was purely lucky for this specific instance (no `MAIL_YN='Y'` rows happened to exist in the range) — this self-cleanup mechanism should not be relied upon for future recoveries.
+
+**20. User's recovery decision: DELETE August+September data cleanly, then rerun DD**
+
+User directed deleting all August+September data across every relevant `LOT_TRACKING` table, then rerunning DD. Swept all 9 tables whose name contains `LOT_TRACKING`: only **3 tables** have a `STD_YM` column AND are actually written by `LG_PRO_DAILY_LOT_TRACKING` (confirmed via the procedure's own commented-out `TRUNCATE` block at the top of its source, lines 5-9): `TLG_LOT_TRACKING_MAT` (92,630 rows for Aug+Sep, including all soft-deleted generations), `TLG_LOT_TRACKING_PROD` (13,096 rows), `TLG_LOT_TRACKING_HIS` (122 rows). `TLG_LOT_TRACKING_GD_M/GD_D` (already investigated in step 19 — no manual delete needed), `TLG_LOT_TRACKING_TEMP` (no month column at all, fully rebuilt on every run), `TLG_GD_LOT_TRACKING_D/M`/`TLG_LOT_TRACKING_PROD_BC` (similarly-named but not touched by this procedure) — out of scope.
+
+Assembled `results/recovery_delete_and_rerun_202608_202609.sql`: hard `DELETE` on all 3 tables `WHERE STD_YM IN ('202608','202609')`, verify clean, then `EXEC LG_PRO_DAILY_LOT_TRACKING('202608','DD')` → `('202609','DD')`, then verify the final result. Accompanying recommendation: still compile the guard-fix patch (step 18) BEFORE running this script — clearing September resolves today's specific incident (no rows left for the buggy guard to collide with), but the root-cause bug still exists unpatched and would recur if a past month is ever re-run again while a later month already has data.
+
+**21. User compiled the guard-fix patch + ran the recovery script — verified results**
+
+Verified: August's DAILY is now **489 rows / 1,084,642.69 kg — an exact match** with the true source total (`TLG_ST_TRANSFER_D/M`) → confirms the guard fix works correctly, root cause resolved. `OPEN` 837 rows / 1,209,469.13 kg (unchanged). All of raw-cotton item group 27 now shows only USOT3137, no BRAMID — matching CESM-418's core goal.
+
+Found one more thing needing clarification: August's `MAPPING` (ration output) = 1,588 rows / 1,087,663.36 kg — about 313K kg lower than the pre-incident baseline (2,225 rows / 1,400,461.90 kg). Critical detail: this exact figure (1,588 rows / 1,087,663.36 kg) is **identical** to the earlier BROKEN run (when DAILY had only 12 rows) — proving the MAPPING shortfall is unrelated to the guard bug just fixed (if it were related, it should have recovered/increased along with DAILY, but it didn't move by a single kg).
+
+Launched a separate 3-agent investigation workflow — all 3 agents failed due to hitting the session usage limit, not a logic error. Switched to direct manual investigation:
+- `TLG_PR_PROD_INCOME_M/D` for August, `STATUS=3`: 832 documents / 3,257,790.53 kg, `MAX_MOD=2026-09-05 08:57:35` — nearly exactly coincides with when August's WIP1 closing was Approved (`CONFIRM_DT=2026-09-05 08:57:38`) — suggesting these records were touched as part of the closing process itself, not evidence of an unusual edit/deletion. `STATUS=1` (not yet approved) is only 6 documents / 4,642.92 kg — far too small to explain the 313K kg gap.
+- Read the ration mechanism's source directly (lines ~613-800): confirmed ration for a given (`SLIP_NO`, `WI_LINE`, `ITEM`) can only draw stock from `TLG_LOT_TRACKING_TEMP` rows matching that exact `WI_LINE_M_PK` (lines 670-671), not freely from the month's total stock. This means that even though aggregate supply (`OPEN+DAILY = 2,294,111.82 kg` today, even higher than the historical ~2,280,613.72 kg) is abundant, a local shortfall can still occur if stock isn't distributed correctly across the specific WI lines that need it.
+
+**Conclusion**: the ~313K kg MAPPING shortfall is most likely a manifestation of the already-known pre-existing carry-over bug (step 5: "the wrong JOIN... means the carried-forward balance is never actually reduced by real consumption") combined with the "path-dependent" nature of the ration algorithm (a single fresh recompute produces a different result than the sequence of nightly recomputations that actually happened throughout August) — NOT a new bug introduced by today's patch (evidence: identical in both the broken and the fixed run). Does not violate CESM-418's core goal. Should be reported to business/DBA as a separate finding, does not block the September 10 closing.
+
+**22. Discovered a real regression on the melt070 screen (Deli Lot Tracking V3) — directly caused by the CESM-418 patch**
+
+Business (via internal chat) reported the melt070 screen (`/me/lt/melt070`) showing many rows with "Origin: none" + "0 files" for August.
+
+Read the source of `LG_SEL_MELT070_02`: Origin/file data is looked up by joining `TLG_KB_COTTON_INCOME_D` (the raw-material receiving record — keeps the ORIGINAL item code, untouched by the patch) with `TLG_LOT_TRACKING_GD_D` (which gets its item code from `TLG_LOT_TRACKING_MAT` — already relabeled BRAMID→USOT3137 by the patch) matching on **both the item code AND `LOT_NO`** (two spots: line ~61 in CTE `TBL_LOT_INFO`, line ~204 in the main LEFT JOIN):
+
+```sql
+-- CTE TBL_LOT_INFO, line ~61 (before):
+AND DI.TLG_IT_ITEM_PK = X1.TLG_IT_ITEM_PK_MAT
+AND DI.LOT_NO = TRIM(X1.MAT_LOT)
+-- Main LEFT JOIN, line ~204 (before):
+AND L.TLG_IT_ITEM_PK_MAT (+) = Z2.TLG_IT_ITEM_PK_MAT
+AND L.MAT_LOT (+) = TRIM(Z2.MAT_LOT)
+```
+
+Once the codes no longer match (121 BRAMID ≠ 122 USOT3137), the join returns NULL → Origin=NULL. The fallback heuristic (`ITEM_CODE LIKE 'USA%'`) doesn't rescue it either, since `'USOT3137'` doesn't match the `'USA%'` pattern (it starts with "USO", not "USA").
+
+**Verified with real data**: all 4 sample `LOT_NO`s shown as "none/0 files" in the screenshot (`203/1076/26-01`, `303C/665/26-01`, `402A/660/26-01`, `402C/219/26-01`) were indeed **purchased and recorded as BRAMID** in `TLG_KB_COTTON_INCOME_D` — 100% confirming this is a direct consequence of the CESM-418 patch.
+
+This screen has `AUSTRALIA/BRAZIL/USA_GIN_CODE` buttons — it serves raw-cotton origin certification for customs/export purposes, where Origin must reflect the true physical origin, not the internally normalized accounting label. Presented two options to the user: (A) fix melt070's join to key on `LOT_NO` alone (keeps the USOT3137 accounting record intact while displaying the true origin), (B) leave as-is. **User chose (A).**
+
+Verified safety before fixing: confirmed **0 `LOT_NO`s in `TLG_KB_COTTON_INCOME_D` are associated with more than one distinct item code**, and **0 `LOT_NO`s are associated with more than one PO_DOC/Origin** — removing the item-code match condition from the join is completely safe, with no risk of fan-out/duplicate rows. Assembled `results/LG_SEL_MELT070_02_PATCHED_origin_join_fix.sql` — a full `CREATE OR REPLACE`, 2 edits tagged `-- [PATCH MELT070-ORIGIN-FIX]`, removing only the item-code match condition and keeping `LOT_NO` as the join key.
+
+**23. Swept the full schema — found 5 more procedures with the same bug**
+
+User asked to also check the "store popup" (the procedure behind the file-viewing popup opened from the "X files" link on the grid). Found `LG_SEL_MELT060_02_FILES` with the exact same defect. Swept the whole schema (every object referencing both `TLG_KB_COTTON_INCOME_D` AND `TLG_LOT_TRACKING_GD_D`) and found a total of **6 procedures** with this bug:
+
+| Procedure | Screen/function | Bug points |
+|---|---|---|
+| `LG_SEL_MELT070_02` | melt070 main grid | 2 (fixed in step 22) |
+| `LG_SEL_MELT060_02_FILES` | File-viewing popup | 1 |
+| `LG_SEL_MELT021_02` | melt021 screen | 2 |
+| `LG_SEL_MELT060_02` | melt060 main grid (V2 of melt070) | 2 |
+| `LG_SEL_MO00010` | File popup variant (uses an `IN` subquery instead of `EXISTS`) | 1 |
+| `LG_SEL_MELT060_SEND_FLOW_MAIL` | Sends the customer-facing traceability-report email | 4 (2 duplicated 'FLOW'/'MAIL' blocks, 2 points each) |
+
+Pulled each procedure's full source and applied the exact same fix principle confirmed in step 22 (remove the item-code match condition, keep `LOT_NO` only). Re-verified via grep across all 6 files: every item-code condition was correctly removed, every `LOT_NO` condition remained intact. Assembled the remaining 5 patch files (`LG_SEL_MELT060_02_FILES_PATCHED_origin_join_fix.sql`, `LG_SEL_MELT021_02_PATCHED_origin_join_fix.sql`, `LG_SEL_MELT060_02_PATCHED_origin_join_fix.sql`, `LG_SEL_MO00010_PATCHED_origin_join_fix.sql`, `LG_SEL_MELT060_SEND_FLOW_MAIL_PATCHED_origin_join_fix.sql`) — plus the one from step 22, all 6 are now ready to compile. Notably, `LG_SEL_MELT060_SEND_FLOW_MAIL` sends the traceability-report email directly to customers — if left unpatched, emails would carry missing/incorrect origin information for exactly the lots the patch relabeled.
+
+---
+
 **Open items still awaiting user/business confirmation:**
 1. Whether keeping `LOT_NO` unchanged after a material-code swap is acceptable, or a different lot reference is needed.
 2. Whether the resulting "orphaned" BRAMID book balance (never consumed by this job again) has any downstream inventory/costing impact.
-3. **[URGENT, not yet done]** Need to manually call `EXEC LG_PRO_DAILY_LOT_TRACKING('202608', 'DD');` to fix August before the September 10 closing — the patch does not retroactively fix existing data.
-4. Confirm the patch's permanent, unconditional scope (all 8 codes in item group 27, no time limit) is really the intended long-term behavior.
-5. Whether the unrelated carry-over `OUTER JOIN` bug (found in step 5) should be filed as its own separate ticket.
-6. **[NEW]** The MM branch currently has no effect for DONGIL (nothing calls it) — is it worth keeping the patch on this branch, or is it purely defensive for other sites sharing the same procedure?
-7. **[NEW]** Whether to add the defensive CASE WHEN at the `TLG_LOT_TRACKING_TEMP`-build step (Agent 2's recommendation, not mandatory).
-8. **[NEW, needs follow-up]** Re-confirm after tonight's nightly run (Sep 8→9): does September's data actually self-heal to 100% USOT3137 as designed.
+3. Confirm the patch's permanent, unconditional scope (all 8 codes in item group 27, no time limit) is really the intended long-term behavior.
+4. Whether the unrelated carry-over `OUTER JOIN` bug (found in step 5) should be filed as its own separate ticket.
+5. The MM branch currently has no effect for DONGIL (nothing calls it, and its own snapshot data source is also incomplete — see step 15) — is it worth keeping the patch on this branch, or is it purely defensive for other sites sharing the same procedure?
+6. Whether to add the defensive CASE WHEN at the `TLG_LOT_TRACKING_TEMP`-build step (Agent 2's recommendation in step 14, not mandatory).
+7. **[NEW]** The ~313K kg MAPPING gap (step 21, suspected related to the already-known pre-existing carry-over bug) — does this need further dedicated investigation to precisely quantify the impact, or is it acceptable to treat this as a consequence of the already-known bug and address it together when that bug is reported?
+8. **[NEW]** After compiling the 6 patch files in step 23 — should other screens/procedures (outside the `TLG_KB_COTTON_INCOME_D`+`TLG_LOT_TRACKING_GD_D` scope) also be swept for potential impact from the item-code relabeling, or are these 6 procedures the complete scope?
