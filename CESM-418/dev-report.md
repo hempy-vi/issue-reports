@@ -6,9 +6,9 @@
 
 ## 2026-09-08
 
-**1. Identified the target object and reference data**
+**1. Xác định đối tượng cần sửa và dữ liệu tham chiếu**
 
-Traced the requirement to procedure `LG_PRO_DAILY_LOT_TRACKING_JOB` (schema DONGIL). It takes no parameters and always derives the working month from `SYSDATE`:
+Truy vết yêu cầu tới procedure `LG_PRO_DAILY_LOT_TRACKING_JOB` (schema DONGIL). Procedure không nhận tham số, luôn tự lấy tháng làm việc từ `SYSDATE`:
 
 ```sql
 L_MONTH VARCHAR2(6):=to_char(sysdate, 'yyyymm');
@@ -16,87 +16,87 @@ L_MONTH VARCHAR2(6):=to_char(sysdate, 'yyyymm');
 L_PROCESS_TYPE VARCHAR2(10):='DD';/*==MM: Monthly closing; DD: Daily Closing=*/
 ```
 
-`L_PROCESS_TYPE` is hardcoded `'DD'` and never reassigned — the `'MM'` branch (lines ~108-282) is dead code for DONGIL, confirmed by the original developer's own comment at line 108: `--ko chay, cua dongil, can sua lai` ("does not run, for dongil, needs fixing").
+`L_PROCESS_TYPE` bị hardcode `'DD'` và không bao giờ được gán lại — nhánh `'MM'` (dòng ~108-282) là dead code đối với DONGIL, xác nhận qua chính comment của dev gốc tại dòng 108: `--ko chay, cua dongil, can sua lai`.
 
-Relevant tables:
-- `TLG_LOT_TRACKING_MAT` — per-lot material allocation detail; this is exactly what the PM0407 "Material Detail" tab displays.
-- `TLG_LOT_TRACKING_TEMP` — internal staging table used only within a single run of the job.
-- `TLG_WI_LINE_OP_CONS` — the Work Instruction's frozen material-blend ratio (master data, not touched by this job).
+Các bảng liên quan:
+- `TLG_LOT_TRACKING_MAT` — chi tiết phân bổ nguyên liệu theo từng lot; đây chính là dữ liệu hiển thị ở tab "Material Detail" của màn PM0407.
+- `TLG_LOT_TRACKING_TEMP` — bảng tạm nội bộ, chỉ dùng trong phạm vi 1 lần chạy job.
+- `TLG_WI_LINE_OP_CONS` — tỷ lệ pha trộn nguyên liệu cố định của Work Instruction (master data, job này không đụng vào).
 
-Item codes resolved:
+Mã nguyên liệu đã tra được:
 - `USOT3137` = `TLG_IT_ITEM.PK 122`
 - `BRAMID` = `PK 121`
-- Both (+ AUS, BRA0001, BRAEAGLE, BRAM 36, USOT3136, USPIMA3346 — 8 codes total) belong to `TLG_IT_ITEMGRP_PK = 27` (the raw-cotton item group).
+- Cả 2 (+ AUS, BRA0001, BRAEAGLE, BRAM 36, USOT3136, USPIMA3346 — tổng 8 mã) đều thuộc `TLG_IT_ITEMGRP_PK = 27` (nhóm nguyên liệu bông thô).
 
-**2. Confirmed the carry-over mechanism with real data**
+**2. Xác nhận cơ chế mang số dư qua tháng bằng dữ liệu thật**
 
-Line 284 soft-deletes the entire current month's `TLG_LOT_TRACKING_MAT` rows on every run, then rebuilds from scratch (matches "recalculates the entire current month every night").
+Dòng 284 xoá mềm toàn bộ dòng `TLG_LOT_TRACKING_MAT` của tháng hiện tại mỗi lần chạy, rồi build lại từ đầu (khớp với "tự tính lại toàn bộ tháng hiện tại mỗi đêm").
 
-Lines 296-355: a `WITH` query (`TBL_IN_DATA`/`TBL_OUT_DATA`) computes prior month's ending balance (`QTY_END_MAT`) per (material item, material lot, mixing lot, WI line), then inserts one new `'OPEN'` row for the current month — **keeping the original `TLG_IT_ITEM_PK` unchanged**:
+Dòng 296-355: 1 câu `WITH` (`TBL_IN_DATA`/`TBL_OUT_DATA`) tính số dư cuối kỳ (`QTY_END_MAT`) của tháng trước theo (mã nguyên liệu, lot nguyên liệu, lot pha trộn, dòng WI), rồi insert 1 dòng `'OPEN'` mới cho tháng hiện tại — **giữ nguyên `TLG_IT_ITEM_PK` gốc**:
 
 ```sql
 SELECT L_TIN_STOCKTR_PK, CUR.SLIP_NO, 'I60', CUR.QTY_END_MAT, ...
 CUR.TLG_IT_ITEM_PK, CUR.LOT_MAT, ... L_MONTH, 'OPEN'
 ```
 
-Verified against `MIX_LOT='MIXEDF1-260627-02'`, item BRAMID (121): OPEN balance persists unchanged across STD_YM 202607 (256,083 kg), 202608 (206,538 kg), 202609 (24,825 kg) — carried forward verbatim, code never changes.
+Đã kiểm chứng với `MIX_LOT='MIXEDF1-260627-02'`, mã BRAMID (121): số dư OPEN giữ nguyên không đổi qua STD_YM 202607 (256,083 kg), 202608 (206,538 kg), 202609 (24,825 kg) — mang sang y nguyên, mã không bao giờ đổi.
 
-**3. Confirmed the material-allocation ("ration") mechanism**
+**3. Xác nhận cơ chế phân bổ nguyên liệu ("ration")**
 
-Lines 613-655 (comment: "CAL RATION ITEM OF MIX_LOT"): cursor `L_CUR` computes `NEED_QTY` per material item using a `RATE` percentage sourced from `TLG_WI_LINE_OP_CONS.CONS_QTY` — the WI's original blend ratio (e.g. 60% BRAMID / 40% USOT3137), fixed at WI-authoring time, not written by this job. Cursor `STOCK_OVER` (631-637) draws matching stock from `TLG_LOT_TRACKING_TEMP` and inserts the allocation row (`STOCK_TYPE='MAPPING'`, `TROUT_TYPE='O60'`) against the finished lot.
+Dòng 613-655 (comment: "CAL RATION ITEM OF MIX_LOT"): cursor `L_CUR` tính `NEED_QTY` cho từng mã nguyên liệu theo tỷ lệ `RATE` lấy từ `TLG_WI_LINE_OP_CONS.CONS_QTY` — tỷ lệ pha trộn gốc của WI (vd 60% BRAMID / 40% USOT3137), cố định từ lúc lập WI, job này không ghi vào đó. Cursor `STOCK_OVER` (631-637) rút tồn khớp từ `TLG_LOT_TRACKING_TEMP` và insert dòng phân bổ (`STOCK_TYPE='MAPPING'`, `TROUT_TYPE='O60'`) vào lot thành phẩm.
 
-A secondary branch (lines 791-862, taken when the mixing lot's remaining stock is less than the finished lot's need) drains `TEMP` directly without going through the RATE split — but since `TEMP` only aggregates what's actually in `TLG_LOT_TRACKING_MAT` (already normalized once the carry-over fix is in place), this branch needs no separate change.
+1 nhánh phụ (dòng 791-862, chạy khi tồn còn lại của lot pha trộn nhỏ hơn nhu cầu của lot thành phẩm) rút thẳng từ `TEMP` không qua bước chia theo RATE — nhưng vì `TEMP` chỉ tổng hợp lại đúng những gì thật sự có trong `TLG_LOT_TRACKING_MAT` (đã được chuẩn hoá sẵn một khi fix ở bước mang số dư qua tháng có hiệu lực), nhánh này không cần sửa riêng.
 
-**4. Drafted a minimal-footprint patch — 2 edit points (v1)**
+**4. Soạn bản patch tối giản — 2 điểm sửa (v1)**
 
-1. Declared 4 new locals + one `SELECT INTO` resolving `USOT3137`'s `PK`/`TLG_IT_ITEMGRP_PK`/`ITEM_CODE`/`ITEM_NAME` at procedure start.
-2. In `TBL_IN_DATA`/`TBL_OUT_DATA` (carry-over CTE, lines ~297-312): wrapped the item code/name columns in `CASE WHEN <same item group, different PK> THEN <USOT3137> ELSE <original>` — everything downstream (JOIN, GROUP BY, the final INSERT at 347-355) is left untouched since it inherits the normalized value through existing aliases.
-3. In cursor `L_CUR` (ration, lines 616-624): added an equivalent `CASE WHEN` layer that consolidates the RATE share of every other cotton code into USOT3137 before computing `NEED_QTY` — without this, the RATE share originally assigned to BRAMID would look for BRAMID stock in `TEMP` (now empty after the carry-over fix) and silently under-allocate.
+1. Khai báo 4 biến local mới + 1 `SELECT INTO` tra `PK`/`TLG_IT_ITEMGRP_PK`/`ITEM_CODE`/`ITEM_NAME` của `USOT3137` ngay đầu procedure.
+2. Trong `TBL_IN_DATA`/`TBL_OUT_DATA` (CTE mang số dư qua tháng, dòng ~297-312): bọc cột mã/tên nguyên liệu bằng `CASE WHEN <cùng nhóm nguyên liệu, khác PK> THEN <USOT3137> ELSE <giá trị gốc>` — mọi thứ phía sau (JOIN, GROUP BY, câu INSERT cuối ở dòng 347-355) không cần đụng tới vì đã tự nhận giá trị đã chuẩn hoá qua alias có sẵn.
+3. Trong cursor `L_CUR` (phân bổ, dòng 616-624): thêm 1 lớp `CASE WHEN` tương đương để gộp phần RATE của mọi mã bông khác vào USOT3137 trước khi tính `NEED_QTY` — nếu không làm vậy, phần RATE vốn gán cho BRAMID sẽ đi tìm tồn BRAMID trong `TEMP` (giờ đã rỗng sau khi fix bước mang số dư qua tháng) và âm thầm phân bổ thiếu.
 
-No quantity (`INPUT_QTY`/`OUTPUT_QTY`/`NEED_QTY`) is changed anywhere — only the material-code label. `LOT_NO` is deliberately left unchanged.
+Không đổi bất kỳ số lượng nào (`INPUT_QTY`/`OUTPUT_QTY`/`NEED_QTY`) ở đâu cả — chỉ đổi nhãn mã nguyên liệu. `LOT_NO` cố tình giữ nguyên không đổi.
 
-**5. Ran an independent verification workflow — found 2 blocking gaps in v1**
+**5. Chạy 1 workflow kiểm chứng độc lập — phát hiện 2 lỗ hổng chặn ở bản v1**
 
-Spawned an independent re-derivation agent (blind to the drafted patch) plus two adversarial reviewers (correctness/safety, and business/accounting risk).
+Khởi chạy 1 agent tái suy luận độc lập (không thấy bản patch đã soạn) cộng thêm 2 reviewer phản biện (đúng/an toàn kỹ thuật, và rủi ro nghiệp vụ/kế toán).
 
-Findings:
-- **Blocking gap**: v1 completely missed a 3rd write path into `TLG_LOT_TRACKING_MAT` — a "stock transfer-in to a `PROCESS_TYPE='MIXED'` warehouse" block (lines 386-414), which inserts `TLG_IT_ITEM_PK = D.TR_ITEM_PK` (the real transferred item) with no normalization at all. Verified against real data: BRAMID flowed through this exact path 3,776 times / 4,322,567 kg — the single largest source of non-USOT3137 material, larger than the carry-over volume.
-- Confirmed the already-drafted carry-over CTE and ration-cursor edits are arithmetically/JOIN-correct and correctly scoped to item group 27 only.
-- **Non-blocking, out of scope**: found a pre-existing bug (unrelated to this ticket) — the carry-over CTE's `OUTER JOIN` matches `SLIP_NO`/`TR_DATE` of an opening-balance row against a finished-lot production row, but these are two structurally unrelated numbering series that never match; net effect is that `OUTPUT` never actually reduces the carried-forward balance (`QTY_END_MAT = SUM(IN) - 0`, always). Confirmed with data: BRAMID's OPEN balance on `MIXEDF1-260627-02` stayed at exactly 3,546.51871 kg across three consecutive months despite matching consumption being recorded each month. Flagged for a separate ticket, not touched here.
-- Confirmed an operational gap: since the job has no parameters and always derives `L_MONTH` from `SYSDATE`, running it on 2026-09-10 (after SYSDATE has rolled into September) will recompute September, not touch August's already-closed ledger.
+Phát hiện:
+- **Lỗ hổng chặn**: bản v1 bỏ sót hoàn toàn 1 đường ghi thứ 3 vào `TLG_LOT_TRACKING_MAT` — khối "chuyển kho vào kho có `PROCESS_TYPE='MIXED'`" (dòng 386-414), insert `TLG_IT_ITEM_PK = D.TR_ITEM_PK` (đúng mã nguyên liệu thật được chuyển) mà không chuẩn hoá gì cả. Kiểm chứng bằng dữ liệu thật: BRAMID đi qua đúng đường này 3,776 lần / 4,322,567 kg — nguồn phát sinh nguyên liệu không phải USOT3137 LỚN NHẤT, lớn hơn cả khối lượng mang qua tháng.
+- Xác nhận 2 điểm sửa CTE mang số dư qua tháng và cursor phân bổ đã soạn đúng về mặt số học/JOIN, và đúng phạm vi chỉ áp dụng cho nhóm nguyên liệu 27.
+- **Không chặn, ngoài phạm vi**: phát hiện 1 lỗi có sẵn trong hệ thống (không liên quan tới ticket này) — `OUTER JOIN` trong CTE mang số dư qua tháng so khớp `SLIP_NO`/`TR_DATE` của 1 dòng số dư mở đầu kỳ với 1 dòng sản xuất của lot thành phẩm, nhưng đây là 2 chuỗi đánh số hoàn toàn không liên quan nên không bao giờ khớp; hệ quả là `OUTPUT` không bao giờ thực sự trừ vào số dư mang qua (`QTY_END_MAT = SUM(IN) - 0`, luôn luôn). Xác nhận bằng dữ liệu: số dư OPEN của BRAMID trên `MIXEDF1-260627-02` giữ nguyên đúng 3,546.51871 kg suốt 3 tháng liên tiếp dù có ghi nhận tiêu thụ khớp mỗi tháng. Đã đánh dấu để báo cáo thành ticket riêng, không sửa ở đây.
+- Xác nhận thêm 1 vướng mắc vận hành: vì job không nhận tham số và luôn tự lấy `L_MONTH` từ `SYSDATE`, nếu chạy vào ngày 2026-09-10 (sau khi `SYSDATE` đã sang tháng 9) sẽ tính lại cho tháng 9, KHÔNG đụng tới sổ sách tháng 8 đã đóng.
 
-**6. Patched v1 → v2 (added the missing 3rd edit point)**
+**6. Vá v1 → v2 (bổ sung điểm sửa thứ 3 còn thiếu)**
 
-Added Edit 5: in the transfer-in cursor's SELECT list (line 390) and its matching `GROUP BY` clause (lines 411-413), applied the same `CASE WHEN I.TLG_IT_ITEMGRP_PK = L_USOT_ITEMGRP_PK AND I.PK <> L_USOT_ITEM_PK THEN L_USOT_ITEM_PK ELSE D.TR_ITEM_PK END` normalization (the join to `TLG_IT_ITEM I` already existed at line 405, no new join needed).
+Thêm Edit 5: trong SELECT list của cursor chuyển kho (dòng 390) và mệnh đề `GROUP BY` tương ứng (dòng 411-413), áp dụng cùng công thức chuẩn hoá `CASE WHEN I.TLG_IT_ITEMGRP_PK = L_USOT_ITEMGRP_PK AND I.PK <> L_USOT_ITEM_PK THEN L_USOT_ITEM_PK ELSE D.TR_ITEM_PK END` (join tới `TLG_IT_ITEM I` đã có sẵn từ dòng 405, không cần thêm join mới).
 
-**7. At user's request, assembled a full `CREATE OR REPLACE PROCEDURE`**
+**7. Theo yêu cầu user, ghép thành 1 bản `CREATE OR REPLACE PROCEDURE` hoàn chỉnh**
 
-Pulled the procedure's verbatim source via `ALL_SOURCE` (paginated `SELECT line, text FROM all_source WHERE name='LG_PRO_DAILY_LOT_TRACKING_JOB' AND type='PROCEDURE' ... ORDER BY line`, in ranges to stay under the read-only tool's row cap), reconstructed the body in a local file, then applied all 5 edits via exact-string-match replacement (each replacement fails loudly if the "before" text doesn't match verbatim — used as a built-in check that no manual retyping drift occurred). Each edit is tagged `-- [PATCH USOT3137]` inline for the DBA's review. Output: `LG_PRO_DAILY_LOT_TRACKING_JOB_PATCHED.sql`.
+Lấy nguyên văn source của procedure qua `ALL_SOURCE` (`SELECT line, text FROM all_source WHERE name='LG_PRO_DAILY_LOT_TRACKING_JOB' AND type='PROCEDURE' ... ORDER BY line`, chia nhiều đợt phân trang để không vượt giới hạn số dòng của tool read-only), dựng lại toàn bộ nội dung vào 1 file local, rồi áp cả 5 điểm sửa bằng cách thay thế khớp chuỗi tuyệt đối (mỗi lần thay thế báo lỗi ngay nếu chuỗi "trước khi sửa" không khớp y nguyên — dùng như 1 lớp kiểm tra tự động không bị lệch do gõ lại thủ công). Mỗi điểm sửa được đánh dấu `-- [PATCH USOT3137]` ngay trong code để DBA dễ review. Output: `LG_PRO_DAILY_LOT_TRACKING_JOB_PATCHED.sql`.
 
-**8. User reported a compile failure (Toad for Oracle)**
+**8. User báo lỗi compile (Toad for Oracle)**
 
 ```
 PLS-00103: Encountered the symbol "end-of-file" when expecting one of the following:
 ( begin case declare end exception exit for goto if loop mod
 null pragma raise return select update while with
 ```
-at the file's last line.
+tại dòng cuối cùng của file.
 
-Ran an independent PL/SQL block-balance checker (custom PowerShell script tracking `BEGIN`/`CASE`/`IF`/`LOOP`/`END` nesting, string/comment-aware) against the patched file — matched the exact same nesting shape as the untouched original, so the 5 edits were not the cause.
+Chạy 1 công cụ kiểm tra cân bằng block PL/SQL độc lập (script PowerShell tự viết, theo dõi độ lồng `BEGIN`/`CASE`/`IF`/`LOOP`/`END`, có nhận diện string/comment) trên file đã patch — khớp y hệt hình dạng lồng nhau của bản gốc chưa sửa, nên 5 điểm sửa không phải nguyên nhân.
 
-To isolate the cause, produced a **control file**: the unmodified original body wrapped only in `CREATE OR REPLACE` / `/` (zero patches). The control file failed with the identical error — proving the bug was in the source-extraction/reconstruction step, not in the 5 edits.
+Để cô lập nguyên nhân, tạo thêm 1 **file đối chứng**: nội dung gốc chưa sửa gì, chỉ bọc thêm `CREATE OR REPLACE` / `/` (0 patch). File đối chứng CŨNG lỗi y hệt — chứng minh lỗi nằm ở bước trích xuất/dựng lại source, không phải ở 5 điểm sửa.
 
-**Root cause**: the procedure's true structure is 3-layered — an outer `BEGIN` (original line 3, immediately after `IS`) wraps a nested `DECLARE ... BEGIN ... END;` block (original lines 17-880), followed by ~465 lines of fully commented-out legacy code (lines 881-1345, inert), followed by exactly **one un-commented `END;` at line 1346** that closes the *outer* `BEGIN`. The extraction had stopped at line 880 (the inner block's own closing `END;`), so it was missing that final outer `END;`.
+**Nguyên nhân gốc**: cấu trúc thật của procedure có 3 lớp — 1 `BEGIN` ngoài cùng (dòng gốc 3, ngay sau `IS`) bọc 1 block `DECLARE ... BEGIN ... END;` lồng bên trong (dòng gốc 17-880), tiếp theo là ~465 dòng code cũ đã comment hết hoàn toàn (dòng 881-1345, không có tác dụng), rồi tới đúng **1 dòng `END;` chưa comment ở dòng 1346** đóng lại `BEGIN` ngoài cùng đó. Bước trích xuất đã dừng lại ở dòng 880 (dòng `END;` đóng block bên trong), nên bị thiếu mất đúng dòng `END;` ngoài cùng đó ở cuối.
 
-**9. Fixed**
+**9. Đã sửa xong**
 
-Appended the missing `END;` before the trailing `/` in both `LG_PRO_DAILY_LOT_TRACKING_JOB_PATCHED.sql` and the control file, and re-ran the block-balance checker: final stack depth 0, zero mismatches, for both files. Sent back to the user to re-compile in Toad.
+Bổ sung lại dòng `END;` còn thiếu trước dấu `/` ở cuối, vào cả `LG_PRO_DAILY_LOT_TRACKING_JOB_PATCHED.sql` lẫn file đối chứng, chạy lại công cụ kiểm tra cân bằng block: độ sâu stack cuối cùng = 0, không còn lệch ở cả 2 file. Đã gửi lại cho user compile lại trong Toad.
 
 ---
 
-**Open items still awaiting user/business confirmation before this goes to production** (see `results/patch_LG_PRO_DAILY_LOT_TRACKING_JOB.md` in the DONGIL workspace session for full detail):
-1. Whether keeping `LOT_NO` unchanged after a material-code swap is acceptable, or a different lot reference is needed.
-2. Whether the resulting "orphaned" BRAMID book balance (never consumed by this job again) has any downstream inventory/costing impact.
-3. Confirm the runbook for re-running August (temporarily hardcoding `L_MONTH:='202608'`, running once manually, then reverting) matches DONGIL/consultant's intended process.
-4. Confirm the patch's permanent, unconditional scope (all 8 codes in item group 27, no time limit) is really the intended long-term behavior.
-5. Whether the unrelated carry-over `OUTER JOIN` bug (found in step 5) should be filed as its own separate ticket.
+**Các điểm còn cần user/phía nghiệp vụ xác nhận trước khi đưa vào chạy chính thức** (xem `results/patch_LG_PRO_DAILY_LOT_TRACKING_JOB.md` trong session DONGIL để biết chi tiết đầy đủ):
+1. Việc giữ nguyên `LOT_NO` sau khi đổi mã nguyên liệu có chấp nhận được không, hay cần 1 số tham chiếu lot khác.
+2. Số dư sổ sách BRAMID bị "mồ côi" sau đó (không bao giờ được job này tiêu thụ nữa) có ảnh hưởng gì tới tồn kho/giá thành phía sau hay không.
+3. Xác nhận quy trình chạy lại cho tháng 8 (tạm thời hardcode `L_MONTH:='202608'`, chạy tay 1 lần, rồi revert lại) có khớp với dự tính của DONGIL/consultant.
+4. Xác nhận phạm vi áp dụng vĩnh viễn, không giới hạn thời gian (toàn bộ 8 mã trong nhóm nguyên liệu 27) có đúng là hành vi mong muốn lâu dài hay không.
+5. Có nên báo cáo riêng lỗi `OUTER JOIN` không liên quan phát hiện ở bước 5 thành 1 ticket khác hay không.
