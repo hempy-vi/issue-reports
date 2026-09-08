@@ -92,11 +92,106 @@ Chạy 1 công cụ kiểm tra cân bằng block PL/SQL độc lập (script Pow
 
 Bổ sung lại dòng `END;` còn thiếu trước dấu `/` ở cuối, vào cả `LG_PRO_DAILY_LOT_TRACKING_JOB_PATCHED.sql` lẫn file đối chứng, chạy lại công cụ kiểm tra cân bằng block: độ sâu stack cuối cùng = 0, không còn lệch ở cả 2 file. Đã gửi lại cho user compile lại trong Toad.
 
+**10. BC bổ sung kết luận "không cần sửa code" — kiểm chứng lại, phát hiện sai**
+
+User gửi ảnh chụp màn PM0407 (WIP1/CM00P1, Biz Center DI_F1-Factory 1, tháng 07/2026, tab Material Detail) kèm nội dung BC bổ sung vào ticket: "Data Analysis: Upon checking the actual data for July 2026, the remaining WIP raw material inventory consists strictly of US Cotton (USOT3137). There are no mixed non-USOT3137 materials (e.g., BRAMID) carried over. Conclusion: ... no system code modification is required for this task."
+
+Kiểm chứng lại bằng query trực tiếp thay vì chấp nhận luôn. Trước tiên xác nhận `BIZ_CENTER=3402` là biz center DUY NHẤT có dữ liệu lot tracking trong toàn hệ thống (không có site/factory khác gây nhầm lẫn) — khớp chính xác "DI_F1-Factory 1". Sau đó query đúng phạm vi BC đã kiểm tra:
+
+```sql
+SELECT M.STD_YM, I.ITEM_CODE AS MAT_ITEM, COUNT(DISTINCT M.MIX_LOT) MIX_LOTS,
+       ROUND(SUM(M.INPUT_QTY),2) TOTAL_IN, ROUND(SUM(M.OUTPUT_QTY),2) TOTAL_OUT
+FROM TLG_LOT_TRACKING_MAT M
+JOIN TLG_IT_ITEM I ON I.PK = M.TLG_IT_ITEM_PK
+JOIN TLG_IT_ITEM I2 ON I2.PK = M.TLG_IT_ITEM_PK_MIX
+WHERE I2.ITEM_CODE = 'CM00P1' AND M.BIZ_CENTER = 3402
+  AND M.STD_YM IN ('202607','202608') AND M.DEL_IF = 0
+GROUP BY M.STD_YM, I.ITEM_CODE ORDER BY M.STD_YM, TOTAL_IN DESC
+```
+
+Kết quả:
+```
+202607  USOT3137   92 mixing lot   704,381.12 kg
+202607  BRAMID     65 mixing lot   505,088.01 kg
+202608  USOT3137  172 mixing lot 1,775,525.71 kg
+202608  BRAMID     65 mixing lot   505,088.01 kg   (carry-over nguyên vẹn, không đổi)
+```
+
+BRAMID chiếm ~42% tổng khối lượng trong đúng phạm vi tháng 7 mà BC đã kiểm tra — mâu thuẫn trực tiếp với kết luận "no mixed non-USOT3137 materials". Xác định lý do BC không nhìn thấy: các Mixing Lot hiển thị trên UI (`MIXEDF1-260728` đến `MIXEDF1-260731`, tạo cuối tháng 7) đã đúng 100% USOT3137 thật — nhưng các mixing lot cũ hơn (`MIXEDF1-260627-xx`, tạo cuối tháng 6) vẫn còn BRAMID, nằm ở phần cần cuộn thêm trong lưới Material Detail (grid có scrollbar). Kết luận: **không đồng ý** với "no system code modification is required" — báo lại cho user kèm số liệu cụ thể, giữ nguyên khuyến nghị patch.
+
+**11. Phát hiện procedure song song — patch hoá ra đã được apply thật lên production**
+
+User đưa ví dụ site KYUNGBANG, nơi `LG_PRO_DAILY_LOT_TRACKING_JOB` chỉ là 1 wrapper mỏng gọi `LG_PRO_DAILY_LOT_TRACKING(L_MONTH, 'DD')` (1 procedure riêng có tham số `P_YYYYMM`, `P_TYPE`), yêu cầu làm giống vậy cho DONGIL.
+
+Trước khi thực hiện, kiểm tra thì phát hiện DONGIL **cũng đã có sẵn** `LG_PRO_DAILY_LOT_TRACKING(P_YYYYMM, P_TYPE default 'MM')` — 1346 dòng, nội dung gần như song song với `_JOB` (chỉ khác 3 dòng: signature, `L_MONTH:=p_yyyymm`, `L_PROCESS_TYPE:=P_TYPE` thay vì hardcode). Diff trực tiếp qua SQL giữa 2 object xác nhận điều này:
+
+```sql
+SELECT A.LINE, A.TEXT AS JOB_TEXT, B.TEXT AS PARAM_TEXT
+FROM (SELECT LINE, TEXT FROM ALL_SOURCE WHERE NAME='LG_PRO_DAILY_LOT_TRACKING_JOB' AND TYPE='PROCEDURE') A
+FULL OUTER JOIN (SELECT LINE, TEXT FROM ALL_SOURCE WHERE NAME='LG_PRO_DAILY_LOT_TRACKING' AND TYPE='PROCEDURE') B
+  ON A.LINE = B.LINE
+WHERE NVL(A.TEXT,'~') <> NVL(B.TEXT,'~')
+ORDER BY A.LINE
+```
+
+Diff cũng vô tình phát hiện: `LG_PRO_DAILY_LOT_TRACKING_JOB` trong DB hiện đang chứa đúng nội dung 5 điểm patch USOT3137 (comment `-- [PATCH USOT3137] Edit 1...` xuất hiện ngay trong `ALL_SOURCE`) — hỏi lại và **user xác nhận đã tự compile bản patch v2 thật lên production rồi** (có tạo 1 bản backup `LG_PRO_DAILY_LOT_TRACKING_JOB_BK` trước khi ghi đè).
+
+Cảnh báo rủi ro cho user: nếu tạo `_JOB` thành wrapper gọi thẳng `LG_PRO_DAILY_LOT_TRACKING` (bản có tham số, **chưa** patch) đúng y yêu cầu ban đầu, sẽ vô hiệu hoá rule USOT3137 vừa apply (vì `CREATE OR REPLACE` sẽ ghi đè mất patch trong `_JOB`, và logic thật chuyển sang chạy ở `LG_PRO_DAILY_LOT_TRACKING` — nơi chưa patch).
+
+**12. Theo yêu cầu user, chuyển toàn bộ logic + patch sang LG_PRO_DAILY_LOT_TRACKING**
+
+User làm rõ: `LG_PRO_DAILY_LOT_TRACKING` sẽ là procedure xử lý chính, áp dụng patch cho **cả 2 nhánh** `'MM'` và `'DD'`; `_JOB` chỉ còn là wrapper gọi vào đó, theo đúng style KYUNGBANG.
+
+Đọc lại toàn bộ nhánh `'MM'` (dòng 108-282 gốc) lần đầu tiên (trước giờ coi là dead code, chưa từng phân tích kỹ): cấu trúc đơn giản hơn nhánh `'DD'` — 3 vòng lặp giống hệt nhau (không qua cơ chế ration/rate như DD), copy trực tiếp từ bảng snapshot đóng sổ `TLG_CL_CLOSING_MAT_DETAIL` (cột `MAT_BEGIN_QTY`/`MAT_IN_QTY`/`MAT_OUT_QTY` tương ứng `STOCK_TYPE='OPEN'/'DAILY'/'MAPPING'`), cả 3 đều lấy thẳng `A.MAT_ITEM_PK` — đã JOIN sẵn tới `TLG_IT_ITEM I`, chỉ cần thêm CASE WHEN vào 1 cột SELECT mỗi vòng:
+
+```sql
+-- Trước:
+,A.MAT_ITEM_PK TLG_IT_ITEM_PK,
+-- Sau (Edit M1/M2/M3, áp cho cả 3 vòng lặp bằng replace_all):
+,CASE WHEN I.TLG_IT_ITEMGRP_PK = L_USOT_ITEMGRP_PK AND I.PK <> L_USOT_ITEM_PK
+      THEN L_USOT_ITEM_PK ELSE A.MAT_ITEM_PK END TLG_IT_ITEM_PK,
+```
+
+Lấy verbatim toàn bộ source `LG_PRO_DAILY_LOT_TRACKING` (RIÊNG, không tái dùng của `_JOB`, để tránh sai lệch) qua `ALL_SOURCE` — xác nhận thân bài giống hệt `_JOB` bản gốc (trước patch), chỉ khác 3 dòng đầu.
+
+Soạn `LG_PRO_DAILY_LOT_TRACKING_PATCHED.sql` — full `CREATE OR REPLACE` với **8 điểm patch**: Edit 1/2 (khai báo 4 biến local + 1 `SELECT INTO` tra `USOT3137` chạy trước cả nhánh MM lẫn DD), Edit M1/M2/M3 (nhánh MM, mới), Edit 3 (carry-over CTE, DD), Edit 5 (transfer-in cursor, DD), Edit 4 (ration cursor, DD) — verify bằng script kiểm tra cân bằng riêng (đếm độ lồng `BEGIN`/`CASE`/`IF`/`LOOP`/`END`, bỏ qua string/comment): độ sâu stack cuối = 0, 0 lệch, số ngoặc cân bằng (250 mở = 250 đóng).
+
+Soạn `LG_PRO_DAILY_LOT_TRACKING_JOB_WRAPPER.sql` — wrapper mỏng cho `_JOB`, đúng mẫu KYUNGBANG:
+
+```sql
+CREATE OR REPLACE PROCEDURE LG_PRO_DAILY_LOT_TRACKING_JOB
+IS
+    L_MONTH VARCHAR2(6):=to_char(sysdate, 'yyyymm');
+BEGIN
+    LG_PRO_DAILY_LOT_TRACKING(L_MONTH, 'DD');
+END;
+/
+```
+
+Ghi chú thứ tự bắt buộc khi áp dụng: chạy file procedure chính TRƯỚC, wrapper SAU — nếu ngược lại, `_JOB` sẽ tạm thời gọi vào bản `LG_PRO_DAILY_LOT_TRACKING` chưa patch. Lợi ích phụ quan trọng: từ giờ chạy lại cho 1 tháng cụ thể (vd tháng 8) chỉ cần gọi trực tiếp `EXEC LG_PRO_DAILY_LOT_TRACKING('202608', 'DD');` với tham số, không cần sửa tạm `L_MONTH` hardcode nữa như phương án Runbook cũ.
+
+**13. Xác nhận cả 2 object đã compile thành công trên production**
+
+Kiểm tra lại `ALL_OBJECTS`: cả `LG_PRO_DAILY_LOT_TRACKING` (last_ddl_time 13:39:03) và `LG_PRO_DAILY_LOT_TRACKING_JOB` (13:39:24 — đúng thứ tự main trước, wrapper sau, cách nhau 21 giây) đều `STATUS=VALID`. Đọc lại `ALL_SOURCE` xác nhận `_JOB` giờ đúng là wrapper 6 dòng, và `LG_PRO_DAILY_LOT_TRACKING` có đủ 9 marker patch (`Edit 1`, `Edit 2`, `Edit M1/M2/M3` ×3, `Edit 3` ×2, `Edit 5`, `Edit 4`).
+
+**14. Tổng duyệt cuối cùng (workflow 3 agent phản biện độc lập, chạy song song)**
+
+Trước khi coi issue này hoàn tất về mặt code, chạy 1 workflow rà soát toàn diện lần cuối trên chính procedure đã live:
+
+- **Agent 1 (nhánh MM)**: xác nhận cả 3 vòng lặp đã patch đúng kỹ thuật (`CASE WHEN` lấy đúng alias `I` = `TLG_IT_ITEM` join sẵn trong from-clause của từng cursor; downstream `CUR.TLG_IT_ITEM_PK` trong câu INSERT resolve đúng chuẩn PL/SQL). **Phát hiện quan trọng**: nhánh MM hiện KHÔNG có tác dụng thực tế trong production DONGIL — truy vấn `ALL_DEPENDENCIES` (`referenced_name='LG_PRO_DAILY_LOT_TRACKING'`) chỉ trả về đúng 1 dòng phụ thuộc là `_JOB` (hardcode `'DD'`), và `DBMS_JOB` (job đang active duy nhất) cũng chỉ gọi `_JOB`. Không object nào khác trong schema gọi với `'MM'`.
+- **Agent 2 (rà soát đầy đủ)**: quét toàn bộ 916 dòng active, xác nhận đúng **10/10 điểm `INSERT INTO TLG_LOT_TRACKING_MAT`** ghi `TLG_IT_ITEM_PK` đều đã chuẩn hoá (7 điểm trực tiếp qua CASE WHEN, 3 điểm ration cuối cùng chuẩn hoá gián tiếp qua bảng tạm `TLG_LOT_TRACKING_TEMP` — vốn build straight từ `TLG_LOT_TRACKING_MAT` đã sạch). Phát hiện 1 điểm yếu kiến trúc nhẹ (chưa phải lỗ hổng thực tế): bước build `TEMP` và 3 điểm ration cuối không có CASE WHEN riêng của mình, hoàn toàn phụ thuộc (transitively) vào các nguồn upstream đã sạch — là 1 "single point of failure" nếu sau này có 1 đường ghi `MAPPING` mới quên chuẩn hoá. Khuyến nghị thêm 1 lớp CASE WHEN phòng thủ tại bước build TEMP, không bắt buộc ngay.
+- **Agent 3 (trạng thái dữ liệu thực tế)**: xác nhận dữ liệu tháng 8 (`STD_YM='202608'`) **hoàn toàn chưa được patch chạm tới** — vẫn còn 1,093 dòng BRAMID / 505,088.00899 kg y nguyên (65 mixing lot, 9 lot vật lý, tất cả tạo cùng 1 batch đóng sổ cuối tháng 8 lúc 23:30-23:31 ngày 31/08). Xác nhận lại: vì `_JOB` luôn lấy `L_MONTH` từ `SYSDATE`, chạy vào bất kỳ ngày nào trước khi sang tháng 10 sẽ luôn tính `L_MONTH='202609'` — không bao giờ tự động đụng tới tháng 8. Cũng phát hiện: tháng 9 (tháng hiện tại) vẫn còn BRAMID sống (294 dòng OPEN + 160 dòng MAPPING) vì lần chạy nightly gần nhất (đêm 07/09 23:30) xảy ra TRƯỚC khi patch compile (08/09 13:39) — về lý thuyết nightly đêm nay (08/09 → 09/09) sẽ tự làm sạch (job soft-delete + build lại toàn bộ MAT của tháng hiện tại mỗi đêm), nhưng chưa được quan sát thực tế.
+
+Kết luận tổng duyệt: code đã đúng và đầy đủ, đã live trên production, nhưng còn 2 việc vận hành cấp bách cần làm trước ngày đóng sổ 10/09: (1) gọi tay `EXEC LG_PRO_DAILY_LOT_TRACKING('202608', 'DD');` để xử lý tháng 8, (2) xác nhận lại kết quả nightly đêm nay có tự làm sạch tháng 9 đúng như thiết kế hay không.
+
 ---
 
-**Các điểm còn cần user/phía nghiệp vụ xác nhận trước khi đưa vào chạy chính thức:**
+**Các điểm còn cần user/phía nghiệp vụ xác nhận:**
 1. Việc giữ nguyên `LOT_NO` sau khi đổi mã nguyên liệu có chấp nhận được không, hay cần 1 số tham chiếu lot khác.
 2. Số dư sổ sách BRAMID bị "mồ côi" sau đó (không bao giờ được job này tiêu thụ nữa) có ảnh hưởng gì tới tồn kho/giá thành phía sau hay không.
-3. Xác nhận quy trình chạy lại cho tháng 8 (tạm thời hardcode `L_MONTH:='202608'`, chạy tay 1 lần, rồi revert lại) có khớp với dự tính của DONGIL/consultant.
+3. **[CẤP BÁCH, chưa thực hiện]** Cần gọi tay `EXEC LG_PRO_DAILY_LOT_TRACKING('202608', 'DD');` để xử lý tháng 8 trước ngày đóng sổ 10/09 — patch không tự sửa dữ liệu cũ.
 4. Xác nhận phạm vi áp dụng vĩnh viễn, không giới hạn thời gian (toàn bộ 8 mã trong nhóm nguyên liệu 27) có đúng là hành vi mong muốn lâu dài hay không.
 5. Có nên báo cáo riêng lỗi `OUTER JOIN` không liên quan phát hiện ở bước 5 thành 1 ticket khác hay không.
+6. **[MỚI]** Nhánh MM hiện không có tác dụng cho DONGIL (không object nào gọi tới) — có cần thiết phải duy trì patch trên nhánh này không, hay chỉ để phòng hờ cho site khác dùng chung procedure?
+7. **[MỚI]** Có muốn bổ sung 1 lớp CASE WHEN phòng thủ tại bước build `TLG_LOT_TRACKING_TEMP` (khuyến nghị của Agent 2, không bắt buộc) hay không?
+8. **[MỚI, cần theo dõi]** Xác nhận lại sau nightly đêm nay (08/09 → 09/09): dữ liệu tháng 9 có tự làm sạch hết BRAMID như thiết kế hay không.

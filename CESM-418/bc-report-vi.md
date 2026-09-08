@@ -81,14 +81,118 @@ tưởng đã hết bài, nhưng thực tế có thêm ĐÚNG 1 dòng kết thú
 Bổ sung lại đúng 1 dòng kết thúc còn thiếu vào cả bản đã sửa lẫn bản đối chứng, kiểm tra lại
 bằng công cụ riêng xác nhận không còn lỗi cấu trúc nào. Đã gửi lại cho user thử chạy lại.
 
+**10. BC bổ sung kết luận "không cần sửa hệ thống" — kiểm chứng lại, phát hiện chưa chính xác**
+
+User gửi kèm ảnh chụp màn hình PM0407 (tháng 07/2026, Factory 1) và 1 kết luận BC đã bổ sung
+vào ticket, đại ý: đã kiểm tra dữ liệu thực tế tháng 7/2026, tồn kho nguyên liệu WIP hoàn toàn
+chỉ có US Cotton (USOT3137), không phát hiện nguyên liệu trộn khác (vd BRAMID) bị mang qua
+tháng — do đó không cần sửa hệ thống nữa.
+
+Thay vì chấp nhận luôn, đã kiểm tra lại bằng cách truy vấn trực tiếp đúng phạm vi mà BC đã xem
+(cùng nhà máy, cùng loại thành phẩm, cùng 2 tháng 7 và 8/2026). Kết quả cho thấy: nguyên liệu
+chưa được duyệt (BRAMID) vẫn đang chiếm khoảng **42% tổng khối lượng** trong đúng phạm vi đó ở
+tháng 7, và số lượng này được mang nguyên vẹn sang tháng 8 — hoàn toàn mâu thuẫn với kết luận
+BC đưa ra.
+
+Xác định nguyên nhân BC không phát hiện ra: màn hình chỉ hiển thị các lô trộn nguyên liệu MỚI
+NHẤT (tạo cuối tháng 7) đã đúng 100% nguyên liệu đã duyệt thật — nhưng các lô trộn CŨ HƠN (tạo
+từ cuối tháng 6) vẫn còn nguyên liệu chưa duyệt, nằm ở phần cần kéo/cuộn thêm trong bảng chi
+tiết mà có thể BC chưa xem hết. Kết luận: không đồng ý với nhận định "không cần sửa hệ thống",
+đã phản hồi lại BC kèm số liệu cụ thể, giữ nguyên khuyến nghị cần sửa.
+
+**11. Phát hiện: có sẵn 1 phiên bản xử lý dùng chung với các nhà máy khác — bản sửa hoá ra đã
+được đưa vào hệ thống thật**
+
+User cho biết: ở 1 số nhà máy khác đang dùng chung nền tảng, job tính lot tracking hàng đêm chỉ
+đóng vai trò "gọi vào" 1 chương trình xử lý chính riêng biệt (có thể truyền vào tháng và loại
+xử lý cần chạy), thay vì tự chứa toàn bộ logic như job của DONGIL hiện tại — và yêu cầu tổ chức
+lại cho DONGIL theo đúng mô hình đó.
+
+Trước khi thực hiện, kiểm tra thì phát hiện DONGIL cũng đã có sẵn 1 chương trình xử lý chính
+như vậy từ trước (không nhận biết trước đó), có cấu trúc gần như song song hoàn toàn với job
+đang dùng của DONGIL. Đồng thời, khi so sánh nội dung 2 chương trình, phát hiện: **bản sửa đã
+soạn trước đó (5 điểm sửa) hoá ra đã được đưa vào hệ thống thật rồi** — hỏi lại và được xác
+nhận: user đã tự kiểm tra và áp dụng bản sửa lên hệ thống production (có sao lưu bản cũ trước
+khi thay thế).
+
+Đã cảnh báo cho user 1 rủi ro: nếu làm đúng y yêu cầu ban đầu (đổi job hàng đêm thành chỉ gọi
+vào chương trình xử lý chính riêng), mà chương trình đó CHƯA có bản sửa, thì việc thay đổi này
+sẽ VÔ HIỆU HOÁ bản sửa vừa được áp dụng.
+
+**12. Theo yêu cầu, chuyển toàn bộ bản sửa sang chương trình xử lý chính**
+
+User làm rõ hướng đi: chương trình xử lý chính (dùng chung, có thể chạy cho cả kỳ đóng sổ
+THÁNG lẫn hàng NGÀY) sẽ là nơi chứa toàn bộ logic và bản sửa; job hàng đêm của DONGIL chỉ còn
+đóng vai trò gọi vào chương trình đó, đúng như mô hình các nhà máy khác đang dùng.
+
+Lần đầu tiên đọc kỹ phần xử lý dành cho kỳ đóng sổ THÁNG (trước giờ chưa từng phân tích vì
+tưởng không được dùng tới) — phát hiện đây là 1 cơ chế đơn giản hơn phần xử lý hàng ngày,
+lấy dữ liệu trực tiếp từ 1 bảng snapshot đã được tính sẵn khi đóng sổ. Đã áp dụng cùng nguyên
+tắc sửa (thay mã nguyên liệu chưa duyệt bằng mã đã duyệt, giữ nguyên khối lượng) cho cả 3 chỗ
+ghi nhận nguyên liệu trong phần xử lý này.
+
+Soạn bản sửa hoàn chỉnh cho chương trình xử lý chính — tổng cộng **8 điểm sửa** (bao gồm cả
+phần xử lý hàng ngày lẫn phần xử lý tháng), đã kiểm tra kỹ bằng công cụ riêng để đảm bảo không
+có lỗi cấu trúc trước khi gửi cho user.
+
+Soạn thêm 1 phiên bản mới cho job hàng đêm hiện tại — giờ chỉ còn 4 dòng, đơn giản chỉ gọi vào
+chương trình xử lý chính, đúng mô hình các nhà máy khác. Có ghi chú rõ thứ tự bắt buộc khi áp
+dụng: phải cập nhật chương trình xử lý chính TRƯỚC, rồi mới cập nhật job hàng đêm SAU — nếu làm
+ngược lại, sẽ có 1 khoảng thời gian ngắn job hàng đêm gọi vào bản CHƯA sửa. Lợi ích thêm: từ giờ
+có thể chủ động chạy lại cho đúng 1 tháng cụ thể (ví dụ tháng 8) bằng cách truyền thẳng tham số,
+không cần chỉnh sửa tạm thời trong code như cách cũ nữa.
+
+**13. Xác nhận cả 2 thay đổi đã được áp dụng thành công lên hệ thống thật**
+
+Kiểm tra lại hệ thống: cả chương trình xử lý chính và job hàng đêm mới đều đã được cập nhật
+thành công, đúng thứ tự (chương trình chính trước, job hàng đêm sau, cách nhau 21 giây), không
+có lỗi. Xác nhận job hàng đêm giờ đúng là bản gọi vào (4 dòng), và chương trình xử lý chính có
+đầy đủ dấu vết của cả 8 điểm đã sửa.
+
+**14. Tổng duyệt lần cuối (3 người kiểm tra độc lập, làm song song)**
+
+Trước khi coi đây là hoàn tất về mặt hệ thống, thực hiện 1 vòng rà soát toàn diện lần cuối trên
+chính phiên bản đã đưa vào hệ thống thật, với 3 hướng kiểm tra độc lập:
+
+- **Kiểm tra phần xử lý THÁNG**: xác nhận cả 3 chỗ sửa trong phần này đều đúng kỹ thuật. Tuy
+  nhiên phát hiện: phần xử lý THÁNG hiện **không có tác dụng thực tế** cho DONGIL — kiểm tra
+  toàn hệ thống xác nhận không có nơi nào (kể cả job hàng đêm) thực sự gọi tới phần xử lý này,
+  chỉ phần xử lý HÀNG NGÀY mới thực sự chạy. Có thể do đây là phần dự phòng cho các nhà máy
+  khác dùng chung, chứ chưa dùng tới ở DONGIL.
+- **Rà soát tính đầy đủ**: quét toàn bộ chương trình, xác nhận đúng **10/10 chỗ** ghi nhận mã
+  nguyên liệu vào hệ thống đều đã được chuẩn hoá đúng (7 chỗ sửa trực tiếp, 3 chỗ còn lại tự
+  động đúng theo nhờ kế thừa từ các chỗ đã sửa phía trước). Có 1 khuyến nghị cải thiện thêm
+  (không bắt buộc ngay): nên thêm 1 lớp kiểm tra dự phòng ở bước tổng hợp tạm thời, để chắc
+  chắn hơn nếu sau này có phát sinh đường ghi dữ liệu mới mà quên áp dụng chuẩn hoá.
+- **Kiểm tra dữ liệu thực tế**: xác nhận dữ liệu THÁNG 8 **hoàn toàn chưa được sửa lại** — vẫn
+  còn hơn 1,000 dòng nguyên liệu chưa duyệt / hơn 500 tấn y nguyên như trước, vì bản sửa chỉ ảnh
+  hưởng LẦN CHẠY TIẾP THEO, không tự động sửa lại dữ liệu đã có sẵn. Đồng thời do job hàng đêm
+  luôn tự tính theo tháng hệ thống hiện tại, chạy vào bất kỳ ngày nào trước khi sang tháng 10 sẽ
+  luôn tính cho THÁNG 9 chứ không tự động đụng tới tháng 8 đã đóng sổ — **bắt buộc phải có 1 lần
+  chạy tay riêng cho tháng 8** trước ngày đóng sổ 10/09. Cũng phát hiện: dữ liệu tháng 9 hiện tại
+  (tháng đang chạy) vẫn còn nguyên liệu chưa duyệt tồn đọng từ lần chạy đêm qua (trước khi bản
+  sửa được đưa vào hệ thống) — theo thiết kế, lần chạy đêm NAY sẽ tự động làm sạch lại, nhưng
+  cần kiểm tra lại vào sáng mai để chắc chắn.
+
+Kết luận: bản sửa đã đúng, đầy đủ, và đã có mặt trên hệ thống thật — nhưng còn 2 việc cần làm
+gấp trước ngày đóng sổ 10/09: (1) chủ động chạy lại riêng cho tháng 8, (2) kiểm tra lại kết quả
+chạy đêm nay có tự làm sạch tháng 9 như mong đợi hay không.
+
 ---
 
-**Các điểm còn cần user/phía DONGIL xác nhận trước khi đưa vào chạy chính thức:**
+**Các điểm còn cần user/phía DONGIL xác nhận:**
 1. Số hiệu lô hàng (lot number) gốc có được giữ nguyên khi đổi mã nguyên liệu hay không.
 2. Số lượng nguyên liệu chưa duyệt còn tồn (sẽ không bao giờ bị trừ nữa trên sổ sách của job
    này) có ảnh hưởng gì tới cách DONGIL theo dõi tồn kho/giá vốn theo từng loại nguyên liệu.
-3. Xác nhận quy trình chạy lại cho đúng tháng 8 có khớp với dự tính của DONGIL/consultant.
+3. **[GẤP, chưa thực hiện]** Cần chủ động chạy lại riêng cho tháng 8 trước ngày đóng sổ 10/09 —
+   bản sửa không tự động sửa lại dữ liệu cũ đã có sẵn.
 4. Xác nhận phạm vi áp dụng vĩnh viễn cho toàn bộ nhóm nguyên liệu bông thô, không giới hạn
    thời gian, có đúng ý muốn lâu dài hay không.
 5. Có muốn báo cáo riêng lỗi phụ phát hiện được ở bước 5 (số dư không được trừ theo tiêu thụ)
    thành 1 yêu cầu/ticket khác hay không.
+6. **[MỚI]** Phần xử lý dành cho kỳ đóng sổ THÁNG hiện không có tác dụng cho DONGIL — có cần
+   thiết phải duy trì bản sửa ở phần này không, hay chỉ để dự phòng cho nhà máy khác dùng chung?
+7. **[MỚI]** Có muốn bổ sung thêm 1 lớp kiểm tra dự phòng ở bước tổng hợp tạm thời (khuyến nghị
+   không bắt buộc) hay không?
+8. **[MỚI, cần theo dõi]** Xác nhận lại sau lần chạy đêm nay: dữ liệu tháng 9 có tự làm sạch hết
+   nguyên liệu chưa duyệt như mong đợi hay không.
