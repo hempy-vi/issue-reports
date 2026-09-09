@@ -234,7 +234,7 @@ Theo yêu cầu của user, kiểm tra thêm popup xem file chứng từ mở ra
 
 ---
 
-**Các điểm còn cần user/phía DONGIL xác nhận:**
+**Các điểm còn cần user/phía DONGIL xác nhận (tính tới hết 2026-09-08):**
 1. Số hiệu lô hàng (lot number) gốc có được giữ nguyên khi đổi mã nguyên liệu hay không.
 2. Số lượng nguyên liệu chưa duyệt còn tồn (sẽ không bao giờ bị trừ nữa trên sổ sách của job
    này) có ảnh hưởng gì tới cách DONGIL theo dõi tồn kho/giá vốn theo từng loại nguyên liệu.
@@ -254,3 +254,51 @@ Theo yêu cầu của user, kiểm tra thêm popup xem file chứng từ mở ra
 8. **[MỚI]** Sau 6 bản sửa ở bước 23 — có cần rà soát thêm các màn hình/tính năng khác (hiện chưa
    kiểm tra) có thể cũng bị ảnh hưởng bởi việc đổi nhãn mã nguyên liệu không, hay 6 chỗ này đã là
    toàn bộ phạm vi?
+
+---
+
+## 2026-09-09
+
+**1. Kiểm chứng độc lập lời khẳng định của phía kinh doanh: "từ tháng 8 dùng 100% nguyên liệu US"**
+
+Phía kinh doanh phản hồi qua chat nội bộ, khẳng định từ tháng 8 công ty chỉ dùng 100% nguyên liệu US (dẫn chứng 1 lô cụ thể). Được yêu cầu kiểm chứng độc lập, không dựa vào đúng những bảng dữ liệu đang nghi có lỗi mà đi thẳng vào chứng từ chuyển kho thật (giao dịch xuất/nhập kho pha trộn, thuộc quy trình sản xuất, hoàn toàn tách biệt với dữ liệu lot tracking).
+
+Kiểm tra chứng từ chuyển kho thật cho 3 lô mix mẫu đã tạo cuối tháng 6 và tháng 7 — xác nhận cả nguyên liệu chưa duyệt lẫn nguyên liệu đã duyệt đều thực sự được chuyển vào kho pha trộn đúng ngày tạo lô đó, có chứng từ đầy đủ. Mở rộng kiểm tra cho toàn bộ tháng 6-7/2026: xác nhận **165 lô mix dùng nguyên liệu đã duyệt (khoảng 1,100 tấn) và 138 lô mix dùng nguyên liệu chưa duyệt (khoảng 1,091 tấn)** — cả 2 loại đều có chứng từ chuyển kho thật, không phải số liệu ảo hay lỗi hệ thống. => Lời khẳng định "100% US từ tháng 8" của phía kinh doanh **không đúng xét theo dữ liệu lịch sử thực tế** đã ghi nhận.
+
+**2. Chuẩn bị (chưa thực thi) phương án xoá lại dữ liệu theo dõi giao hàng cho tháng 8+9**
+
+Theo yêu cầu, soạn sẵn 1 phương án xoá sạch và dựng lại dữ liệu theo dõi giao hàng/truy xuất nguồn gốc (đã đề cập ở bước 19-20 ngày 08/09) đúng cho phạm vi tháng 8 và tháng 9/2026 — đã xác nhận lại phạm vi này (không phải toàn bộ lịch sử) trước khi soạn.
+
+**3. Xác nhận lại: dữ liệu phân bổ nguyên liệu đã đúng 100% nguyên liệu đã duyệt sau lần sửa lỗi ngày 08/09**
+
+Kiểm tra lại toàn bộ dữ liệu tháng 8 và tháng 9 sau khi đã sửa lỗi mất dữ liệu (bước 18-21 ngày 08/09): xác nhận **không còn bất kỳ dòng dữ liệu nào** ghi nhận nguyên liệu chưa duyệt cho 2 tháng này — hoàn toàn 100% nguyên liệu đã duyệt, đúng như mục tiêu ban đầu của yêu cầu này.
+
+**4. Chạy phương án xoá ở bước 2 — phát hiện chỉ khôi phục được 1 phần dữ liệu giao hàng**
+
+Sau khi xoá, số liệu giao hàng chỉ khôi phục lại được khoảng 1/4 so với trước (khoảng 400/1,400 và 600/16,000 dòng tương ứng ở 2 tầng dữ liệu) — không đầy đủ như dự kiến ban đầu. Kiểm tra lại kỹ hơn: hoá ra cơ chế "tự dựng lại khi mở màn hình" chỉ dựng đúng phần dữ liệu tương ứng với khoảng ngày mà người dùng đã search qua giao diện, KHÔNG tự động phủ hết toàn bộ 2 tháng như đã hiểu nhầm ban đầu. Đã chuẩn bị 1 lệnh gọi trực tiếp để ép dựng lại toàn bộ 2 tháng trong 1 lần, dựa trên đúng dữ liệu đã sửa lỗi (an toàn, không tạo trùng lặp nếu chạy nhiều lần).
+
+**5. Phía kinh doanh gửi ảnh chụp màn hình theo dõi giao hàng — thấy nhiều dòng thiếu xuất xứ và thiếu file chứng từ**
+
+Điều tra sâu nguyên nhân: cách màn hình này tra cứu xuất xứ/chứng từ có 1 điều kiện phụ giới hạn theo đúng danh sách các lô đang hiển thị trên màn hình tại thời điểm search — điều kiện phụ này đang loại nhầm 1 số dòng ra, dù dữ liệu chứng từ gốc phía sau (hồ sơ mua hàng, xuất xứ, file đính kèm) **hoàn toàn còn nguyên vẹn và đầy đủ**. Đã kiểm chứng trực tiếp: lấy đúng 1 lô hàng đang bị hiện "không có xuất xứ/không có file" trên màn hình, tra ngược lại hồ sơ mua hàng gốc — vẫn tìm thấy đầy đủ hồ sơ, đúng xuất xứ Brazil, và đủ 7 file chứng từ đính kèm. => **Xác nhận đây là 1 lỗi hiển thị riêng của màn hình (do điều kiện lọc phụ), KHÔNG PHẢI mất dữ liệu** do bước xoá/dựng lại ở bước 2-4 gây ra.
+
+**6. Phía kinh doanh phản hồi bằng bằng chứng tồn kho vật lý thật — khẳng định nguyên liệu chưa duyệt đã hết sạch từ 22/7**
+
+Phía kinh doanh dẫn chứng bằng 1 màn hình kiểm tra tồn kho vật lý (không liên quan gì tới dữ liệu lot tracking đang điều tra), khẳng định nguyên liệu chưa duyệt đã hết sạch trong kho từ ngày 22/7/2026. Kiểm chứng độc lập bằng đúng nguồn dữ liệu kho vật lý thật (sổ cân đối tồn kho + giao dịch nhập/xuất kho thật) — số liệu tính lại khớp CHÍNH XÁC với ảnh chụp màn hình đã gửi. Xác nhận: tồn nguyên liệu chưa duyệt tại kho nguyên liệu chính, tính đến 22/7/2026, đúng là **bằng 0**, và không có bất kỳ giao dịch nhập/xuất nào sau đó. Kiểm tra thêm kho nguyên liệu cotton còn lại duy nhất khác — cũng cho kết quả tương tự (gần như bằng 0, không đủ dùng). => **Phía kinh doanh hoàn toàn đúng về hiện trạng tồn kho vật lý.**
+
+**7. Xác định chính xác ngày cuối cùng thực sự còn dùng nguyên liệu chưa duyệt để pha trộn**
+
+Đối chiếu lại với đúng chứng từ chuyển kho thật (đã dùng ở bước 1): xác nhận lô pha trộn cuối cùng thực sự dùng nguyên liệu chưa duyệt là ngày **21/7/2026** — không có lô nào sau ngày đó còn dùng loại nguyên liệu này, khớp hoàn toàn với việc kho báo hết sạch từ 22/7. => **Chốt được mốc chính xác: từ 22/7/2026 trở đi, mọi lô pha trộn mới đều chắc chắn 100% nguyên liệu đã duyệt thật sự; các lô pha trộn từ 21/7/2026 trở về trước thì có dùng nguyên liệu chưa duyệt thật — đây là sự thật đã xảy ra, không thể thay đổi ngược lại được.**
+
+**8. Tổng hợp giải thích cho phía kinh doanh: phân biệt "lúc pha trộn" và "lúc giao hàng"**
+
+Giải thích rõ cho phía kinh doanh: sở dĩ dữ liệu tháng 8 vẫn còn ghi nhận nguyên liệu chưa duyệt là vì có 2 mốc thời gian khác nhau trong cùng 1 quy trình — lúc PHA TRỘN nguyên liệu (xảy ra 1 lần, đã dừng hẳn từ 21/7) khác với lúc GIAO HÀNG thành phẩm cho khách (kéo dài nhiều tuần sau đó, có thể tới tháng 8-9). Lô hàng giao trong tháng 8, nếu được sản xuất từ mẻ đã pha trộn nguyên liệu chưa duyệt từ trước 21/7, thì đúng là còn dùng nguyên liệu đó thật — không phải pha trộn mới trong tháng 8, cũng không phải lỗi dữ liệu.
+
+Đồng thời làm rõ thêm 1 điểm quan trọng cho quyết định tiếp theo: mã nguyên liệu hiện đang hiển thị là "đã duyệt" cho các lô này (sau khi được chuẩn hoá theo yêu cầu ban đầu) **không phản ánh đúng thực tế nguyên liệu đã dùng** — hồ sơ mua hàng gốc của các lô này (đã kiểm chứng ở bước 5) vẫn đúng là hồ sơ nguyên liệu chưa duyệt thật, có đầy đủ chứng từ. Nếu muốn dữ liệu phản ánh đúng 100% thực tế, các lô pha trộn trước 22/7 cần hiển thị lại đúng là nguyên liệu chưa duyệt (cả mã nguyên liệu lẫn xuất xứ); còn các lô pha trộn từ 22/7 trở đi thì chắc chắn đã là nguyên liệu đã duyệt thật, không cần chỉnh sửa gì thêm.
+
+---
+
+**Các điểm còn cần user/phía DONGIL xác nhận (bổ sung 2026-09-09):**
+9. **[MỚI]** Có nên ép hiển thị xuất xứ là "đã duyệt" cho những lô ĐÃ XÁC NHẬN có hồ sơ mua hàng thật ghi nhận là nguyên liệu chưa duyệt (kèm đầy đủ chứng từ) hay không — đây là quyết định liên quan tới chứng nhận xuất xứ/tuân thủ, không đơn thuần là chọn cách hiển thị. Tính năng gửi báo cáo truy xuất nguồn gốc qua email cho khách hàng vẫn đang tạm giữ, chưa áp dụng thay đổi này, chờ đúng quyết định này.
+10. **[MỚI]** Có nên sửa lại để những lô pha trộn TRƯỚC ngày 22/7/2026 hiển thị đúng lại là nguyên liệu chưa duyệt (thay vì nhãn đã chuẩn hoá) cho khớp đúng thực tế đã sản xuất — hay giữ nguyên cách chuẩn hoá 100% như yêu cầu ban đầu (chấp nhận đây là nhãn sổ sách nội bộ, không phải xuất xứ vật lý thật của lô hàng)?
+11. **[MỚI]** Lỗi hiển thị riêng ở màn hình theo dõi giao hàng (bước 5 — làm ẩn xuất xứ/chứng từ dù dữ liệu gốc vẫn còn nguyên) — có cần điều tra thêm để sửa dứt điểm hay không (độc lập với 2 quyết định nghiệp vụ ở mục 9/10)?
+12. **[MỚI]** Phạm vi xoá dữ liệu giao hàng tháng 8+9 (bước 2) và lệnh dựng lại toàn bộ (bước 4) đã chuẩn bị sẵn — đang chờ được thực thi.

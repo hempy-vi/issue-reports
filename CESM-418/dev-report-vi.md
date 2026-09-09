@@ -329,7 +329,7 @@ Lấy full source từng procedure, áp dụng đúng 1 nguyên tắc sửa đã
 
 ---
 
-**Các điểm còn cần user/phía nghiệp vụ xác nhận:**
+**Các điểm còn cần user/phía nghiệp vụ xác nhận (tính tới hết 2026-09-08):**
 1. Việc giữ nguyên `LOT_NO` sau khi đổi mã nguyên liệu có chấp nhận được không, hay cần 1 số tham chiếu lot khác.
 2. Số dư sổ sách BRAMID bị "mồ côi" sau đó (không bao giờ được job này tiêu thụ nữa) có ảnh hưởng gì tới tồn kho/giá thành phía sau hay không.
 3. Xác nhận phạm vi áp dụng vĩnh viễn, không giới hạn thời gian (toàn bộ 8 mã trong nhóm nguyên liệu 27) có đúng là hành vi mong muốn lâu dài hay không.
@@ -338,3 +338,115 @@ Lấy full source từng procedure, áp dụng đúng 1 nguyên tắc sửa đã
 6. Có muốn bổ sung 1 lớp CASE WHEN phòng thủ tại bước build `TLG_LOT_TRACKING_TEMP` (khuyến nghị của Agent 2 ở bước 14, không bắt buộc) hay không?
 7. **[MỚI]** Khoảng chênh lệch ~313K kg ở MAPPING (bước 21, nghi liên quan bug carry-over cũ đã biết) — có cần điều tra sâu thêm để định lượng chính xác tác động, hay chấp nhận đây là hệ quả của bug đã biết và xử lý chung khi báo cáo bug đó?
 8. **[MỚI]** Sau khi compile 6 file patch ở bước 23 — có cần rà soát thêm các màn hình/procedure KHÁC (ngoài phạm vi `TLG_KB_COTTON_INCOME_D`+`TLG_LOT_TRACKING_GD_D`) có thể cũng bị ảnh hưởng bởi việc đổi mã nguyên liệu không, hay 6 procedure này đã là toàn bộ phạm vi?
+
+---
+
+## 2026-09-09
+
+**1. Xác minh độc lập tuyên bố "100% US từ tháng 8" của BC (Le Tien) qua module Production/kho vận**
+
+BC (Le Tien) phản hồi qua chat nội bộ, khẳng định "từ tháng 8 dùng 100% Origin US" (dẫn chứng Lot No 2608, cột Mat_item hiện USOT3137). Yêu cầu chứng minh độc lập, lần lượt siết chặt điều kiện: (1) không qua `TLG_LOT_TRACKING_GD_D`/`GD_M`, (2) không qua BẤT KỲ bảng nào tên `LOT_TRACKING`.
+
+Dựng chain hoàn toàn thuộc module Production/kho vận: `TLG_WI_LINE_M.SLIP_NO` (= mã MIX_LOT thật; lưu ý cột `MIX_LOT_NO` trên cùng bảng luôn NULL/không dùng, đã verify trực tiếp) → `TLG_WI_LINE_M.TLG_ST_TRANSFER_REQ_M_PK` → `TLG_ST_TRANSFER_REQ_M/D` → `TLG_ST_TRANSFER_D/M` (chứng từ chuyển kho thật, `STATUS=3`) → `TLG_IN_WAREHOUSE` (lọc `PROCESS_TYPE='MIXED'`):
+
+```sql
+SELECT L.SLIP_NO MIX_LOT, M.TR_DATE, M.SLIP_NO TRANSFER_SLIP_NO,
+       D.TR_ITEM_PK, I.ITEM_CODE, ROUND(D.TR_QTY,2) TR_QTY
+FROM TLG_WI_LINE_M L
+JOIN TLG_ST_TRANSFER_REQ_M R ON R.PK = L.TLG_ST_TRANSFER_REQ_M_PK AND R.DEL_IF = 0
+JOIN TLG_ST_TRANSFER_REQ_D RD ON RD.TLG_ST_TRANSFER_REQ_M_PK = R.PK AND RD.DEL_IF = 0
+JOIN TLG_ST_TRANSFER_D D ON D.TLG_ST_TRANSFER_REQ_D_PK = RD.PK AND D.DEL_IF = 0
+JOIN TLG_ST_TRANSFER_M M ON M.PK = D.TLG_ST_TRANSFER_M_PK AND M.DEL_IF = 0
+JOIN TLG_IN_WAREHOUSE W ON W.PK = M.IN_WH_PK AND W.DEL_IF = 0
+JOIN TLG_IT_ITEM I ON I.PK = D.TR_ITEM_PK AND I.DEL_IF = 0
+WHERE L.DEL_IF = 0 AND M.STATUS = 3 AND L.STATUS = 3 AND W.PROCESS_TYPE = 'MIXED'
+```
+
+Với 3 mixing lot mẫu (`MIXEDF1-260627-02`, `MIXEDF1-260701-01`, `MIXEDF1-260721-03`) → 28 dòng, cả BRAMID lẫn USOT3137 đều có chứng từ chuyển kho thật vào đúng ngày tạo lot. Mở rộng cho toàn bộ tháng 6-7/2026 (phát hiện và sửa lỗi ưu tiên `AND`/`OR` thiếu ngoặc ở lần chạy đầu — khiến điều kiện lọc `DEL_IF`/`STATUS`/`PROCESS_TYPE` bị bỏ qua cho 1 nhánh tháng): **USOT3137 165 mixing lot / 1,100,141.43kg; BRAMID 138 mixing lot / 1,091,235.31kg** — cả 2 đều có chứng từ chuyển kho thật, không phải dữ liệu ảo/lỗi. => Tuyên bố "100% US từ tháng 8" của BC không đúng ở tầng dữ liệu lịch sử.
+
+**2. Chuẩn bị (không tự chạy) script xoá `TLG_LOT_TRACKING_GD_D`/`GD_M` phạm vi tháng 8+9/2026**
+
+Theo yêu cầu user, soạn `results/delete_gd_m_gd_d_aug_sep_2026.sql`: hard DELETE `TLG_LOT_TRACKING_GD_D` (16,283 dòng) trước, rồi `TLG_LOT_TRACKING_GD_M` (1,413 dòng), lọc `WHERE TLG_GD_OUTGO_M.OUT_DATE BETWEEN '20260801' AND '20260930'`. Phạm vi (chỉ 2 tháng, không phải toàn bộ lịch sử) đã được xác nhận lại với user trước khi soạn.
+
+**3. Verify lại OPEN balance sau guard-fix recovery (đã chạy ở 2026-09-08) — xác nhận allocation đã 100% USOT3137**
+
+```sql
+SELECT M.STD_YM, I.ITEM_CODE, M.STOCK_TYPE, ROUND(SUM(M.INPUT_QTY),2) IN_QTY
+FROM TLG_LOT_TRACKING_MAT M JOIN TLG_IT_ITEM I ON I.PK = M.TLG_IT_ITEM_PK
+WHERE M.DEL_IF = 0 AND I.ITEM_CODE IN ('BRAMID','USOT3137')
+AND M.STD_YM IN ('202607','202608','202609') AND M.STOCK_TYPE = 'OPEN'
+GROUP BY M.STD_YM, I.ITEM_CODE, M.STOCK_TYPE
+```
+
+Kết quả: 202607 (trước patch) vẫn còn BRAMID 69,272.57kg song song USOT3137 45,395.22kg; **202608 và 202609 (sau patch+recovery) chỉ còn USOT3137** (1,209,469.13kg và 2,294,111.82kg), **0 dòng BRAMID**. Re-verify diện rộng: `TLG_LOT_TRACKING_MAT`/`TLG_LOT_TRACKING_PROD` cho STD_YM 202608/202609, mọi `STOCK_TYPE`, tham chiếu tới BRAMID (PK=121) → **0 dòng**. Xác nhận patch CESM-418 đã hoạt động đúng như thiết kế ở tầng allocation.
+
+**4. User chạy script xoá GD_M/GD_D — phát hiện giả định sai trong chính script, chỉ rebuild được 1 phần**
+
+Sau khi user chạy script ở bước 2, số dòng còn lại chỉ **390/1,413 (GD_M)** và **600/16,283 (GD_D)** — không tự dựng lại đủ như ghi chú trong file. Đọc lại full source `LG_PRO_LOT_TRACKING_GD_M`/`LG_PRO_LOT_TRACKING_GD_D`:
+
+- `LG_PRO_LOT_TRACKING_GD_M(P_DT_FROM, P_DT_TO, P_SEL_OPTION, P_TXT_SEARCHLIST, P_SEL_INTERFACE_YN, P_PARTNER, P_PARAM2, P_PARAM3, P_PARAM4, P_LANG, P_CRT_BY)` — chỉ `P_DT_FROM`/`P_DT_TO` thực sự ảnh hưởng logic lọc/insert (cursor chính lọc `M.OUT_DATE BETWEEN P_DT_FROM AND P_DT_TO`); 7/11 tham số còn lại không xuất hiện trong bất kỳ điều kiện WHERE/SELECT nào, chỉ `P_CRT_BY` được dùng làm giá trị audit `MOD_BY`. Cuối procedure gọi `LG_PRO_LOT_TRACKING_GD_D(P_DT_FROM, P_DT_TO)` cùng khoảng ngày.
+- => Cơ chế "rebuild-on-open" **CHỈ dựng lại đúng khoảng ngày được truyền vào** khi UI gọi (theo đúng search của user trên màn hình), KHÔNG tự động phủ toàn bộ tháng như giả định ban đầu trong ghi chú của script xoá.
+
+Soạn `results/force_full_rebuild_gd_m_gd_d_aug_sep_2026.sql`:
+```sql
+EXEC LG_PRO_LOT_TRACKING_GD_M('20260801','20260930', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'RECOVERY-CESM418');
+```
+Verify an toàn chạy lại: `LG_PRO_LOT_TRACKING_GD_M` dùng pattern `SELECT INTO`/`EXCEPTION` (kiểm tra tồn tại trước khi insert từng node CUST/PO_NO/DELI/IT/LOT) — idempotent; `LG_PRO_LOT_TRACKING_GD_D` chỉ xử lý dòng GD_M còn `NVL(MAP_QTY,0) < NVL(QTY,0)` — dòng đã map đủ sẽ tự bỏ qua khi rerun.
+
+**5. BC gửi screenshot melt070 (Lot 2608RN) — nhiều dòng Origin=none/0 files; điều tra root cause**
+
+Đọc full source `LG_SEL_MELT070_02` — Origin/files tính từ CTE `TBL_LOT_INFO`: INNER JOIN `TLG_KB_COTTON_INCOME_D` (DI) → `TLG_PO_DOC_D0` (D1) → `TLG_PO_DOC_M` (M1) → `TES_FILE` (Z1), lọc bởi:
+```sql
+AND EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_GD_D X1 WHERE X1.DEL_IF = 0
+  AND EXISTS (SELECT 1 FROM TABLE(SPLIT(P_PARAM1,';')) WHERE COLUMN_VALUE = X1.TLG_LOT_TRACKING_GD_m_PK)
+  AND DI.LOT_NO = TRIM(X1.MAT_LOT))
+```
+rồi OUTER JOIN `L.MAT_LOT(+) = TRIM(Z2.MAT_LOT)` vào query chính (đã có patch Option A từ 09-08: bỏ điều kiện so khớp mã nguyên liệu, chỉ giữ `LOT_NO`).
+
+Trace trực tiếp 4 mat_lot bị "none" (`203/1076/26-01`, `303C/665/26-01`, `402A/660/26-01`, `402C/219/26-01`):
+```sql
+SELECT LOT_NO, TLG_PO_DOC_M_PK, TLG_IT_ITEM_PK, DEL_IF FROM TLG_KB_COTTON_INCOME_D
+WHERE LOT_NO LIKE '203/1076/26%' OR LOT_NO LIKE '303C/665/26%' OR ...
+```
+→ cả 4 đều có `TLG_IT_ITEM_PK=121` (BRAMID) trong chứng từ gốc (mat_lot hiện đúng "USA/7 files" — `301A/1584/26-01` — có item=122, USOT3137 thật, không relabel). Chạy lại riêng chain INNER JOIN đầy đủ cho `LOT_NO='203/1076/26-01'`, KHÔNG qua điều kiện EXISTS/P_PARAM1:
+```sql
+-- (chain DI->D1->M1->Z1, WHERE DI.LOT_NO = '203/1076/26-01', không có EXISTS)
+```
+→ **vẫn ra kết quả**: `ORIGIN='BRA'`, tổng **7 files** (TYPE01/02/03/05/06/07 mỗi loại 1 file, TYPE07 2 file). Đối chiếu `TLG_LOT_TRACKING_GD_D.MAT_LOT` cho lot VP2608RN, mat_lot này: giá trị lưu đúng `"203/1076/26-01"` (14 ký tự, khớp tuyệt đối với `TLG_KB_COTTON_INCOME_D.LOT_NO`, không lệch định dạng/khoảng trắng).
+
+=> **Kết luận: dữ liệu gốc (`TLG_KB_COTTON_INCOME_D`+`TLG_PO_DOC_M/D0`+`TES_FILE`) hoàn toàn nguyên vẹn, KHÔNG bị mất/hỏng bởi bước xoá+rebuild GD_M/GD_D.** "None/0 files" là 1 bug RIÊNG trong chính điều kiện `EXISTS`/`P_PARAM1` của `LG_SEL_MELT070_02` (giới hạn theo danh sách GD_M.PK đang được search trên UI) — chưa xác định 100% cơ chế chính xác gây loại nhầm (cần `P_PARAM1` thật từ browser để verify tiếp), nhưng chắc chắn không phải mất dữ liệu.
+
+**6. BC phản hồi bằng chứng kho vật lý thật (màn hình IV0401 W/H Stock Checking, `lg_sel_bisc00020`)**
+
+BC dẫn chứng: `exec lg_sel_bisc00020('20260722','20260831','10','428','','','N','ENG','Y',:p_rtn_value)`, khẳng định BRAMID đã hết sạch tại kho từ 22/7/2026. Đọc full source `lg_sel_bisc00020` — dùng `TLG_SA_STOCK_CLOSING_M/D` (bảng cân đối đóng kỳ thật) + `TLG_IN_STOCKTR` (giao dịch nhập/xuất kho thật), **hoàn toàn không qua bất kỳ bảng LOT_TRACKING nào**.
+
+Tính lại độc lập cho warehouse PK=428 (M011-COTTON W/H Fac1, khớp `WH_TYPE='10'`):
+```sql
+-- BEGIN_QTY(22/7) = closing_end_qty(lan dong ky gan nhat truoc 22/7)
+--                 + SUM(IN_QTY-OUT_QTY tu TLG_IN_STOCKTR, TR_DATE giua lan dong ky va 22/7)
+```
+→ khớp CHÍNH XÁC 100% với số liệu trên screenshot của BC (Begin Qty USOT3137 = 1,974,477.71, Total In = 713,165.00, Total Out = 1,444,729.04). Riêng BRAMID tại M011: Begin Qty(22/7) = 1,649,051.5 + (-1,649,051.5) = **0.00kg**; Total In/Out (22/7→hiện tại) = **0/0**. Mở rộng kiểm tra cả kho M001-IQC Cotton W/H Fac1 (kho nguyên liệu cotton thứ 2 duy nhất còn lại): cũng **~0 (âm nhẹ, không đủ dùng)**, 0 giao dịch sau 22/7. => **BC hoàn toàn đúng về hiện trạng kho vật lý.**
+
+**7. Đối chiếu lại với chain Production/kho vận (bước 1) để tìm chính xác ngày cutoff**
+
+```sql
+SELECT L.SLIP_NO MIX_LOT, MAX(M.TR_DATE) LAST_TR_DATE, ROUND(SUM(D.TR_QTY),2) TONG_KG_BRAMID
+FROM TLG_WI_LINE_M L JOIN TLG_ST_TRANSFER_REQ_M R ON ... JOIN TLG_IN_WAREHOUSE W ON ...
+WHERE ... AND W.PROCESS_TYPE='MIXED' AND D.TR_ITEM_PK=121
+GROUP BY L.SLIP_NO ORDER BY LAST_TR_DATE DESC
+```
+→ Lô mix BRAMID cuối cùng thật sự là **21/7/2026** (`MIXEDF1-260721-01/02/03`, tổng ~21,730kg) — không lô nào sau đó dùng BRAMID. Khớp hoàn toàn với kho báo hết từ 22/7 (bước 6). **Chốt mốc: từ 22/7/2026 trở đi, mọi lô mix genuinely 100% USOT3137 thật; các lô mix từ 21/7/2026 trở về trước có pha BRAMID thật — sự thật vật lý cố định, không thể đảo ngược bằng thao tác hệ thống.**
+
+**8. Tổng hợp giải thích nghiệp vụ cho BC — phân biệt thời điểm MIX vs thời điểm DELIVERY**
+
+Kết luận cuối, đã trao đổi lại với BC: dữ liệu "còn Brazil ở tháng 8" phản ánh đúng 2 thời điểm khác nhau trong 1 chuỗi — (a) MIX (trộn nguyên liệu, xảy ra 1 lần, dừng hẳn từ 21/7) khác với (b) DELI (giao hàng thành phẩm cho khách, rải rác nhiều tuần sau, có thể tới tháng 8-9). Lô hàng giao trong tháng 8 nếu được sản xuất từ mẻ đã mix bằng BRAMID trước 21/7 thì đúng là còn Brazil thật — không phải mix mới, không phải lỗi dữ liệu.
+
+Đồng thời làm rõ với BC 1 hệ luỵ quan trọng cho quyết định nghiệp vụ tiếp theo: item hiện "USOT3137" cho các lô này (kể cả sau khi item-code được chuẩn hoá bởi CESM-418) **không phản ánh đúng thực tế đã dùng nguyên liệu gì** — chứng từ mua hàng gốc của các lô này (đã verify ở bước 5) vẫn là chứng từ Brazil thật, có file đầy đủ. Nếu muốn dữ liệu đúng 100% thực tế, các lô mix trước 22/7 phải hiển thị lại đúng là Brazil (cả item lẫn Origin); còn các lô mix từ 22/7 trở đi (bước 7) thì chắc chắn genuinely 100% USOT3137, không cần chỉnh sửa gì.
+
+---
+
+**Các điểm còn cần user/phía nghiệp vụ xác nhận (bổ sung 2026-09-09):**
+9. **[MỚI]** Có nên ghi đè hiển thị Origin=USA (patch V2 đã soạn, `LG_SEL_MELT070_02`/`MELT021_02`/`MELT060_02`) cho các lô đã xác nhận có chứng từ Brazil THẬT đính kèm đầy đủ hay không — đây là quyết định compliance/chứng nhận xuất xứ, không chỉ là lựa chọn hiển thị. `LG_SEL_MELT060_SEND_FLOW_MAIL` (gửi email traceability trực tiếp cho khách hàng) vẫn đang giữ nguyên chưa compile bản V2 (`_PENDING_confirmation.sql`), chờ đúng quyết định này.
+10. **[MỚI]** Có nên sửa lại để item/Origin của các lô mix TRƯỚC 22/7/2026 hiển thị đúng lại là Brazil (thay vì USOT3137 đã chuẩn hoá) để khớp đúng thực tế vật lý — hay giữ nguyên chuẩn hoá 100% USOT3137 như CESM-418 yêu cầu ban đầu (chấp nhận đây là nhãn kế toán nội bộ, không phải xuất xứ vật lý thật)?
+11. **[MỚI]** Bug riêng trong điều kiện `EXISTS`/`P_PARAM1` của `LG_SEL_MELT070_02` (bước 5, làm ẩn Origin/files dù dữ liệu gốc còn nguyên) — cần điều tra sâu thêm cơ chế chính xác và vá lại hay không (độc lập với quyết định nghiệp vụ ở mục 9/10)?
+12. **[MỚI]** Đã xác nhận scope xoá cho `results/delete_gd_m_gd_d_aug_sep_2026.sql` là chỉ tháng 8+9/2026 — script này và `results/force_full_rebuild_gd_m_gd_d_aug_sep_2026.sql` (bước 4) vẫn đang chờ user tự chạy qua Toad.

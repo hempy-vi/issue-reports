@@ -329,7 +329,7 @@ Pulled each procedure's full source and applied the exact same fix principle con
 
 ---
 
-**Open items still awaiting user/business confirmation:**
+**Open items still awaiting user/business confirmation (as of end of 2026-09-08):**
 1. Whether keeping `LOT_NO` unchanged after a material-code swap is acceptable, or a different lot reference is needed.
 2. Whether the resulting "orphaned" BRAMID book balance (never consumed by this job again) has any downstream inventory/costing impact.
 3. Confirm the patch's permanent, unconditional scope (all 8 codes in item group 27, no time limit) is really the intended long-term behavior.
@@ -338,3 +338,115 @@ Pulled each procedure's full source and applied the exact same fix principle con
 6. Whether to add the defensive CASE WHEN at the `TLG_LOT_TRACKING_TEMP`-build step (Agent 2's recommendation in step 14, not mandatory).
 7. **[NEW]** The ~313K kg MAPPING gap (step 21, suspected related to the already-known pre-existing carry-over bug) — does this need further dedicated investigation to precisely quantify the impact, or is it acceptable to treat this as a consequence of the already-known bug and address it together when that bug is reported?
 8. **[NEW]** After compiling the 6 patch files in step 23 — should other screens/procedures (outside the `TLG_KB_COTTON_INCOME_D`+`TLG_LOT_TRACKING_GD_D` scope) also be swept for potential impact from the item-code relabeling, or are these 6 procedures the complete scope?
+
+---
+
+## 2026-09-09
+
+**1. Independently verifying business's (Le Tien's) claim of "100% US since August" via the Production/warehouse-transfer module**
+
+Business (Le Tien) responded via internal chat, asserting "since August we've been using 100% Origin US" (citing Lot No 2608, whose Mat_item column shows USOT3137). Asked to prove this independently, with progressively tighter constraints: (1) without going through `TLG_LOT_TRACKING_GD_D`/`GD_M`, (2) without going through ANY table named `LOT_TRACKING`.
+
+Built a chain entirely within the Production/warehouse-transfer module: `TLG_WI_LINE_M.SLIP_NO` (= the real MIX_LOT code; note the `MIX_LOT_NO` column on the same table is always NULL/unused, verified directly) → `TLG_WI_LINE_M.TLG_ST_TRANSFER_REQ_M_PK` → `TLG_ST_TRANSFER_REQ_M/D` → `TLG_ST_TRANSFER_D/M` (real warehouse-transfer vouchers, `STATUS=3`) → `TLG_IN_WAREHOUSE` (filtered `PROCESS_TYPE='MIXED'`):
+
+```sql
+SELECT L.SLIP_NO MIX_LOT, M.TR_DATE, M.SLIP_NO TRANSFER_SLIP_NO,
+       D.TR_ITEM_PK, I.ITEM_CODE, ROUND(D.TR_QTY,2) TR_QTY
+FROM TLG_WI_LINE_M L
+JOIN TLG_ST_TRANSFER_REQ_M R ON R.PK = L.TLG_ST_TRANSFER_REQ_M_PK AND R.DEL_IF = 0
+JOIN TLG_ST_TRANSFER_REQ_D RD ON RD.TLG_ST_TRANSFER_REQ_M_PK = R.PK AND RD.DEL_IF = 0
+JOIN TLG_ST_TRANSFER_D D ON D.TLG_ST_TRANSFER_REQ_D_PK = RD.PK AND D.DEL_IF = 0
+JOIN TLG_ST_TRANSFER_M M ON M.PK = D.TLG_ST_TRANSFER_M_PK AND M.DEL_IF = 0
+JOIN TLG_IN_WAREHOUSE W ON W.PK = M.IN_WH_PK AND W.DEL_IF = 0
+JOIN TLG_IT_ITEM I ON I.PK = D.TR_ITEM_PK AND I.DEL_IF = 0
+WHERE L.DEL_IF = 0 AND M.STATUS = 3 AND L.STATUS = 3 AND W.PROCESS_TYPE = 'MIXED'
+```
+
+For 3 sample mixing lots (`MIXEDF1-260627-02`, `MIXEDF1-260701-01`, `MIXEDF1-260721-03`) → 28 rows, both BRAMID and USOT3137 have real warehouse-transfer vouchers dated exactly to each lot's creation date. Expanded to the full June-July 2026 range (found and fixed a missing-parentheses `AND`/`OR` precedence bug in the first run, which had let the `DEL_IF`/`STATUS`/`PROCESS_TYPE` filters be bypassed for one month's branch): **USOT3137 165 mixing lots / 1,100,141.43kg; BRAMID 138 mixing lots / 1,091,235.31kg** — both have real transfer vouchers, not fake/erroneous data. => Business's "100% US since August" claim is not accurate at the historical-data layer.
+
+**2. Preparing (not executing) a DELETE script for `TLG_LOT_TRACKING_GD_D`/`GD_M`, scoped to August+September 2026**
+
+Per user request, drafted `results/delete_gd_m_gd_d_aug_sep_2026.sql`: hard DELETE `TLG_LOT_TRACKING_GD_D` (16,283 rows) first, then `TLG_LOT_TRACKING_GD_M` (1,413 rows), filtered by `WHERE TLG_GD_OUTGO_M.OUT_DATE BETWEEN '20260801' AND '20260930'`. The scope (only these 2 months, not all-time history) was reconfirmed with the user before drafting.
+
+**3. Re-verifying OPEN balance after the guard-fix recovery (run on 2026-09-08) — confirming allocation is already 100% USOT3137**
+
+```sql
+SELECT M.STD_YM, I.ITEM_CODE, M.STOCK_TYPE, ROUND(SUM(M.INPUT_QTY),2) IN_QTY
+FROM TLG_LOT_TRACKING_MAT M JOIN TLG_IT_ITEM I ON I.PK = M.TLG_IT_ITEM_PK
+WHERE M.DEL_IF = 0 AND I.ITEM_CODE IN ('BRAMID','USOT3137')
+AND M.STD_YM IN ('202607','202608','202609') AND M.STOCK_TYPE = 'OPEN'
+GROUP BY M.STD_YM, I.ITEM_CODE, M.STOCK_TYPE
+```
+
+Result: 202607 (pre-patch) still shows BRAMID 69,272.57kg alongside USOT3137 45,395.22kg; **202608 and 202609 (post patch+recovery) show only USOT3137** (1,209,469.13kg and 2,294,111.82kg), **0 BRAMID rows**. Broader re-verification: `TLG_LOT_TRACKING_MAT`/`TLG_LOT_TRACKING_PROD` for STD_YM 202608/202609, across every `STOCK_TYPE`, referencing BRAMID (PK=121) → **0 rows**. Confirms the CESM-418 patch is working exactly as designed at the allocation layer.
+
+**4. User ran the GD_M/GD_D delete script — found a false assumption baked into the script itself; only a partial rebuild occurred**
+
+After the user ran the script from step 2, only **390/1,413 (GD_M)** and **600/16,283 (GD_D)** rows came back — not a full rebuild as the script's own comment had claimed. Re-read the full source of `LG_PRO_LOT_TRACKING_GD_M`/`LG_PRO_LOT_TRACKING_GD_D`:
+
+- `LG_PRO_LOT_TRACKING_GD_M(P_DT_FROM, P_DT_TO, P_SEL_OPTION, P_TXT_SEARCHLIST, P_SEL_INTERFACE_YN, P_PARTNER, P_PARAM2, P_PARAM3, P_PARAM4, P_LANG, P_CRT_BY)` — only `P_DT_FROM`/`P_DT_TO` actually affect the filter/insert logic (the main cursor filters `M.OUT_DATE BETWEEN P_DT_FROM AND P_DT_TO`); 7 of the remaining 11 parameters appear in no WHERE/SELECT condition at all, and only `P_CRT_BY` is used, as the `MOD_BY` audit value. At the end it calls `LG_PRO_LOT_TRACKING_GD_D(P_DT_FROM, P_DT_TO)` with the same date range.
+- => The "rebuild-on-open" mechanism **only rebuilds the exact date range passed in** when the UI calls it (matching whatever the user searched on-screen), and does NOT automatically cover the whole month as originally assumed in the delete script's comment.
+
+Drafted `results/force_full_rebuild_gd_m_gd_d_aug_sep_2026.sql`:
+```sql
+EXEC LG_PRO_LOT_TRACKING_GD_M('20260801','20260930', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'RECOVERY-CESM418');
+```
+Verified it's safe to run: `LG_PRO_LOT_TRACKING_GD_M` uses a `SELECT INTO`/`EXCEPTION` existence-check pattern before inserting each CUST/PO_NO/DELI/IT/LOT node — idempotent; `LG_PRO_LOT_TRACKING_GD_D` only processes GD_M rows where `NVL(MAP_QTY,0) < NVL(QTY,0)` — already-fully-mapped rows are skipped automatically on rerun.
+
+**5. Business sent a melt070 screenshot (Lot 2608RN) showing several Origin=none/0-files rows; investigated root cause**
+
+Read the full source of `LG_SEL_MELT070_02` — Origin/files are computed from CTE `TBL_LOT_INFO`: INNER JOIN `TLG_KB_COTTON_INCOME_D` (DI) → `TLG_PO_DOC_D0` (D1) → `TLG_PO_DOC_M` (M1) → `TES_FILE` (Z1), filtered by:
+```sql
+AND EXISTS (SELECT 1 FROM TLG_LOT_TRACKING_GD_D X1 WHERE X1.DEL_IF = 0
+  AND EXISTS (SELECT 1 FROM TABLE(SPLIT(P_PARAM1,';')) WHERE COLUMN_VALUE = X1.TLG_LOT_TRACKING_GD_m_PK)
+  AND DI.LOT_NO = TRIM(X1.MAT_LOT))
+```
+then OUTER JOINed via `L.MAT_LOT(+) = TRIM(Z2.MAT_LOT)` into the main query (the Option A patch from 09-08 — removing the item-code match condition, keeping only `LOT_NO` — was already applied here).
+
+Traced the 4 "none" mat_lots directly (`203/1076/26-01`, `303C/665/26-01`, `402A/660/26-01`, `402C/219/26-01`):
+```sql
+SELECT LOT_NO, TLG_PO_DOC_M_PK, TLG_IT_ITEM_PK, DEL_IF FROM TLG_KB_COTTON_INCOME_D
+WHERE LOT_NO LIKE '203/1076/26%' OR LOT_NO LIKE '303C/665/26%' OR ...
+```
+→ all 4 have `TLG_IT_ITEM_PK=121` (BRAMID) in the original purchase record (the mat_lot correctly showing "USA/7 files" — `301A/1584/26-01` — has item=122, genuine USOT3137, never relabeled). Re-ran the full INNER JOIN chain for `LOT_NO='203/1076/26-01'` alone, bypassing the EXISTS/P_PARAM1 condition entirely:
+```sql
+-- (chain DI->D1->M1->Z1, WHERE DI.LOT_NO = '203/1076/26-01', no EXISTS)
+```
+→ **still returns data**: `ORIGIN='BRA'`, a total of **7 files** (TYPE01/02/03/05/06/07 with 1 file each, TYPE07 with 2). Cross-checked `TLG_LOT_TRACKING_GD_D.MAT_LOT` for lot VP2608RN's entry for this mat_lot: stored value is exactly `"203/1076/26-01"` (14 characters, an exact match to `TLG_KB_COTTON_INCOME_D.LOT_NO`, no formatting/whitespace drift).
+
+=> **Conclusion: the source data (`TLG_KB_COTTON_INCOME_D`+`TLG_PO_DOC_M/D0`+`TES_FILE`) is fully intact — NOT lost or corrupted by the GD_M/GD_D delete+rebuild step.** "None/0 files" is a SEPARATE bug in `LG_SEL_MELT070_02`'s own `EXISTS`/`P_PARAM1` condition (which restricts by the list of GD_M.PKs currently in the UI's search results) — the exact mechanism causing the mismatch isn't 100% pinned down yet (would need the real `P_PARAM1` value from the browser to verify further), but it is definitively not data loss.
+
+**6. Business pushed back with real physical-warehouse evidence (IV0401 W/H Stock Checking screen, `lg_sel_bisc00020`)**
+
+Business cited: `exec lg_sel_bisc00020('20260722','20260831','10','428','','','N','ENG','Y',:p_rtn_value)`, asserting BRAMID has been fully depleted in the warehouse since 2026-07-22. Read the full source of `lg_sel_bisc00020` — it uses `TLG_SA_STOCK_CLOSING_M/D` (real period-end stock-balance table) + `TLG_IN_STOCKTR` (real inbound/outbound transactions), **going through no LOT_TRACKING table whatsoever**.
+
+Independently recomputed for warehouse PK=428 (M011-COTTON W/H Fac1, matching `WH_TYPE='10'`):
+```sql
+-- BEGIN_QTY(7/22) = closing_end_qty(most recent closing before 7/22)
+--                 + SUM(IN_QTY-OUT_QTY from TLG_IN_STOCKTR, TR_DATE between the closing and 7/22)
+```
+→ matched the business's screenshot numbers EXACTLY (Begin Qty USOT3137 = 1,974,477.71, Total In = 713,165.00, Total Out = 1,444,729.04). For BRAMID at M011 specifically: Begin Qty(7/22) = 1,649,051.5 + (-1,649,051.5) = **0.00kg**; Total In/Out (7/22→now) = **0/0**. Extended the check to the only other cotton raw-material warehouse (M001-IQC Cotton W/H Fac1): also **~0 (slightly negative, effectively unavailable)**, 0 transactions since 7/22. => **Business is entirely correct about the physical-warehouse state.**
+
+**7. Cross-referenced against the Production/warehouse-transfer chain (step 1) to pin down the exact cutoff date**
+
+```sql
+SELECT L.SLIP_NO MIX_LOT, MAX(M.TR_DATE) LAST_TR_DATE, ROUND(SUM(D.TR_QTY),2) TONG_KG_BRAMID
+FROM TLG_WI_LINE_M L JOIN TLG_ST_TRANSFER_REQ_M R ON ... JOIN TLG_IN_WAREHOUSE W ON ...
+WHERE ... AND W.PROCESS_TYPE='MIXED' AND D.TR_ITEM_PK=121
+GROUP BY L.SLIP_NO ORDER BY LAST_TR_DATE DESC
+```
+→ The last mixing lot that genuinely used BRAMID was **2026-07-21** (`MIXEDF1-260721-01/02/03`, ~21,730kg total) — no mixing lot after that date used BRAMID. This matches exactly with the warehouse reporting depletion from 7/22 (step 6). **Confirmed cutoff: from 2026-07-22 onward, every mixing lot is genuinely 100% USOT3137; mixing lots from 2026-07-21 and earlier genuinely contain BRAMID — a fixed physical fact that no system operation can reverse.**
+
+**8. Synthesized the business explanation for the customer-facing team — distinguishing MIX time from DELIVERY time**
+
+Final conclusion, communicated back to business: the "still shows Brazil in August" data reflects two distinct points in time within the same chain — (a) MIX (raw-material blending, a one-time event, which genuinely stopped on 7/21) versus (b) DELI (finished-goods delivery to the customer, spread over subsequent weeks, potentially into August-September). A lot delivered in August that was produced from a batch mixed with BRAMID before 7/21 genuinely still contains Brazilian cotton — this is not a new mix, and not a data error.
+
+Also clarified an important implication for the next business decision: the item code now showing "USOT3137" for these lots (even after CESM-418's normalization) **does not reflect the true raw material actually used** — the original purchase records for these lots (verified in step 5) are still genuine Brazil purchase records, with complete supporting files. If fully accurate-to-reality data is wanted, lots mixed before 7/22 should display Brazil again (both item and Origin); lots mixed from 7/22 onward (step 7) are genuinely, verifiably 100% USOT3137 and need no correction.
+
+---
+
+**Open items still awaiting user/business confirmation (added 2026-09-09):**
+9. **[NEW]** Whether to override the Origin display to USA (the drafted V2 patch for `LG_SEL_MELT070_02`/`MELT021_02`/`MELT060_02`) for lots confirmed to have genuine, fully-attached Brazil purchase certificates — this is a compliance/origin-certification decision, not merely a display choice. `LG_SEL_MELT060_SEND_FLOW_MAIL` (sends the traceability email directly to customers) still has its V2 fix uncompiled (`_PENDING_confirmation.sql`), pending exactly this decision.
+10. **[NEW]** Whether the item/Origin for lots mixed BEFORE 2026-07-22 should be corrected back to show Brazil (instead of the normalized USOT3137) to match physical reality — or kept as the fully-normalized 100% USOT3137 CESM-418 originally required (accepting this as an internal accounting label, not the true physical origin).
+11. **[NEW]** The separate bug in `LG_SEL_MELT070_02`'s `EXISTS`/`P_PARAM1` condition (step 5, which hides Origin/files even though the source data is intact) — should this be investigated further to pin down the exact mechanism and patched, independent of the business decisions in items 9/10?
+12. **[NEW]** Confirmed the delete scope for `results/delete_gd_m_gd_d_aug_sep_2026.sql` is August+September 2026 only — this script and `results/force_full_rebuild_gd_m_gd_d_aug_sep_2026.sql` (step 4) are both still awaiting the user to run them via Toad.
