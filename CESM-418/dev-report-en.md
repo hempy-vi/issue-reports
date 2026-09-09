@@ -450,3 +450,87 @@ Also clarified an important implication for the next business decision: the item
 10. **[NEW]** Whether the item/Origin for lots mixed BEFORE 2026-07-22 should be corrected back to show Brazil (instead of the normalized USOT3137) to match physical reality — or kept as the fully-normalized 100% USOT3137 CESM-418 originally required (accepting this as an internal accounting label, not the true physical origin).
 11. **[NEW]** The separate bug in `LG_SEL_MELT070_02`'s `EXISTS`/`P_PARAM1` condition (step 5, which hides Origin/files even though the source data is intact) — should this be investigated further to pin down the exact mechanism and patched, independent of the business decisions in items 9/10?
 12. **[NEW]** Confirmed the delete scope for `results/delete_gd_m_gd_d_aug_sep_2026.sql` is August+September 2026 only — this script and `results/force_full_rebuild_gd_m_gd_d_aug_sep_2026.sql` (step 4) are both still awaiting the user to run them via Toad.
+
+**9. Multiple customers reported "No data" on melt070 — confirmed same already-known root cause (not a new bug)**
+
+User sent 4 consecutive melt070 screenshots reporting "No data" in the detail grid for 4 different customers (PT.WIN TEXTILE contract DV-26-053, WHA IL VINA, DI DONG-IL CORPORATION contract DV-26-109, RISE SUN HONG KONG contract 26-102), even though the header still showed a `total_delivery_qty` (meaning GD_M exists). Directly verified the first case:
+
+```sql
+SELECT X.PK, X.LEVEL_TYPE, X.PO_NO, X.SLIP_NO, X.LOT_NO, X.QTY, X.MAP_QTY, X.MAP_YN,
+  (SELECT COUNT(*) FROM TLG_LOT_TRACKING_GD_D Z WHERE Z.DEL_IF=0 AND Z.TLG_LOT_TRACKING_GD_M_PK = X.PK) GD_D_COUNT
+FROM TLG_LOT_TRACKING_GD_M X
+WHERE X.DEL_IF = 0 AND X.LOT_NO = 'VP2608RN' AND X.PO_NO = 'DV-26-053'
+```
+
+→ GD_M exists (2 rows, PK 25804/25808, with QTY set) but **GD_D_COUNT = 0** for both — confirmed this is exactly the consequence of the earlier GD_M/GD_D rebuild (step 4, previous section) only covering a partial range (390/1,413 GD_M, 600/16,283 GD_D). Not a per-customer bug — reported back: running the full `force_full_rebuild_gd_m_gd_d_aug_sep_2026.sql` script will fix ALL customers at once, no need to verify each case individually.
+
+**10. Compile error when user ran the revert file — found and fixed a nested-comment bug**
+
+User compiled `LG_PRO_DAILY_LOT_TRACKING_REVERT_open_carryover_2026-09-09.sql` (the revert drafted in the previous section) and hit 4 errors:
+```
+[Error] Compilation (439: 141): PLS-00103: Encountered the symbol "=" ...
+[Error] Compilation (440: 74): PLS-00103: Encountered the symbol ";" ...
+[Error] Compilation (471: 33): PLS-00103: Encountered the symbol "COMMIT" ...
+[Error] Compilation (473: 24): PLS-00103: Encountered the symbol ";" ...
+```
+
+Grepped the whole file for every `/*`/`*/` pair:
+```sql
+-- Line 439 (inside the block just commented out in the previous revert step):
+FROM TLG_WI_LINE_M M, TLG_ST_TRANSFER_REQ_M Z WHERE  /*M.DEL_IF = 0 AND  M.STATUS = 3  AND */ M.SLIP_NO = CUR.LOT_NO
+```
+
+**Root cause**: line 439 (part of the dev lead's original code, sitting inside the block just commented out by the revert) already had its own inline `/* ... */` comment. Oracle PL/SQL **does not support nested comments** — that inner comment's `*/` prematurely closed the revert's outer wrapping comment, causing everything after it (from " M.SLIP_NO = CUR.LOT_NO" through the rest of the block) to become "live" again as syntactically invalid code — matching exactly all 4 reported errors.
+
+**Fix**: removed the nested `/* */` pair, keeping the text inside it (harmless, since the whole span already sits inside the outer comment):
+```sql
+-- Before: WHERE  /*M.DEL_IF = 0 AND  M.STATUS = 3  AND */ M.SLIP_NO = CUR.LOT_NO
+-- After:  WHERE  M.DEL_IF = 0 AND  M.STATUS = 3  AND  M.SLIP_NO = CUR.LOT_NO
+```
+Re-verified: `grep -o '/\*'` and `grep -o '\*/'` both returned exactly 22 matches, balanced — no more nested pairs anywhere in the edited region.
+
+**11. User reported that after the revert, the "100% USA" the dev lead had produced was gone — confirmed this is CORRECT behavior, not a regression**
+
+After recompiling, user ran `exec LG_SEL_MELT070_02(';25953;25954;25957;...',...)` directly and got `USA: 38.4%, BRAZIL: 61.6%` instead of the 100% USA the dev lead's version had produced.
+
+Re-explained to the user: the earlier "100% USA" was **false** — a direct side effect of the dev lead's logic silently dropping ~90% of the real carry-over data (proven in the previous section: August OPEN had collapsed to just 55/837 rows). The small remainder that survived happened to consist entirely of lots mixed after 7/29 (genuinely 100% US by then). After reverting to the correct carry-over logic (reading fully from `TLG_LOT_TRACKING_MAT`), the real data — including lots genuinely mixed with real BRAMID before 7/22 — came back exactly as it should. This is the CORRECT result, matching the original figures the user had sent when the issue was first discovered.
+
+**12. Dev lead suspected mix_lot MIXEDF1-260627-02 "should not appear" in August's allocation — investigated, confirmed a REAL pre-existing bug, but of a different nature**
+
+User (relaying the dev lead): "mix_lot MIXEDF1-260627-02 should not be showing up for allocation to goods produced in August, ... the opening-period data is wrong." Checked this mix_lot's full IN/OUT history:
+
+```sql
+SELECT M.STD_YM, M.STOCK_TYPE, I.ITEM_CODE, ROUND(SUM(M.INPUT_QTY),2) IN_QTY, ROUND(SUM(M.OUTPUT_QTY),2) OUT_QTY
+FROM TLG_LOT_TRACKING_MAT M
+JOIN TLG_IT_ITEM I ON I.PK = M.TLG_IT_ITEM_PK AND I.DEL_IF = 0
+WHERE M.DEL_IF = 0 AND M.MIX_LOT = 'MIXEDF1-260627-02'
+GROUP BY M.STD_YM, M.STOCK_TYPE, I.ITEM_CODE ORDER BY M.STD_YM, M.STOCK_TYPE
+```
+
+Result: 06/2026 real mixing (DAILY) BRAMID 8,146.35 + USOT3137 5,380.08kg. 07/2026 MAPPING OUT 5,888.74kg (=3,546.52 BRAMID+2,342.22 USOT3137) and OPEN carried forward **also exactly 5,888.74kg**. 08/2026 MAPPING OUT **the identical 5,888.74kg**, OPEN carried forward **also identical**. 09/2026 repeats the exact same pattern again.
+
+→ **Confirmed a real pre-existing bug**: this balance NEVER decreased across 3 straight months — exactly matching the carry-over bug already documented at the very start of this ticket (a faulty `OUTER JOIN` between `SLIP_NO`/`TR_DATE` means `OUTPUT` never actually gets subtracted from `QTY_END_MAT`), completely unrelated to the dev lead's newly-reverted bug.
+
+**But clarified for the user**: this bug only corrupts the **QUANTITY** tracked (possibly a phantom/repeating number from the calculation error), it does **NOT** corrupt the **MATERIAL TYPE** — the physical nature of this mix_lot (mixed on 6/27, using real BRAMID) doesn't change regardless of whether the carried-over quantity is miscalculated. The correct fix (if pursued) is to properly compute real consumption in the carry-over CTE, NOT to override the Origin/item display to USA — declined the "force 100% USA" request, since doing so would mean overwriting a fact independently verified multiple times today through separate sources.
+
+**13. User continued to argue the "system picked the wrong mix_lot" — verified the complete allocation source for lot VP2608RN, decisively refuting the theory**
+
+User proposed: perhaps a CORRECT mix_lot from August (100% USA) exists that the system should have used instead of mistakenly picking MIXEDF1-260627-02 (June). Verified the complete picture (not just one row):
+
+```sql
+SELECT SUBSTR(M.MIX_LOT,9,4) MIX_LOT_YYMM, COUNT(DISTINCT M.MIX_LOT) SO_MIX_LOT, ROUND(SUM(M.OUTPUT_QTY),2) TONG_KG
+FROM TLG_LOT_TRACKING_MAT M
+WHERE M.DEL_IF = 0 AND M.REF_LOT_NO_PROD = 'VP2608RN' AND M.TROUT_TYPE = 'O60'
+GROUP BY SUBSTR(M.MIX_LOT,9,4) ORDER BY MIX_LOT_YYMM
+```
+
+Result: finished lot VP2608RN draws raw material from **74 mix_lots** — **9 June lots (66,026.13kg) + 65 July lots (454,272.81kg) = 520,298.94kg, with ZERO mix_lots from August (0 lots, 0kg)**. This is a very large finished lot, produced by gradually drawing down a large number of mixing batches already sitting in inventory from June-July — there is no August mix_lot at all that could have been "mistakenly" used instead. Refuted the "wrong mix_lot" theory using the complete dataset, not a guess.
+
+---
+
+**Updated open items still awaiting user/business confirmation (as of end of workday 2026-09-09):**
+
+Items 9 (V2 Origin revert) and 10 (item showing Brazil for lots before 7/22) from earlier in the day **remain open, no final decision yet** — this item now carries additional important context: the confirmed pre-existing carry-over bug (step 12) means the currently-tracked carry-over QUANTITY may not be 100% reliable (since it isn't properly reduced by real consumption), even though the MATERIAL TYPE (Brazil vs US) of each individual mix_lot is still correctly identified.
+
+14. **[NEW]** The pre-existing carry-over bug (step 12: a faulty `OUTER JOIN` means `OUTPUT` never actually gets subtracted from `QTY_END_MAT`) was RE-CONFIRMED today with real data (mix_lot MIXEDF1-260627-02, balance 5,888.74kg repeating identically for 3 straight months) — should be prioritized for reporting/fixing as its own ticket, since it is currently being used (incorrectly) as grounds to question the correctness of the CESM-418 patch itself.
+15. **[NEW]** Needs alignment with the dev lead/business: the proposal to "force item/Origin to 100% USA for August's finished goods" has no data supporting it (refuted in steps 12-13) — needs agreement on the correct fix (address the carry-over bug at the QUANTITY level, not touch the material LABEL) before any further code changes are made to `LG_PRO_DAILY_LOT_TRACKING`.

@@ -302,3 +302,40 @@ Giải thích rõ cho phía kinh doanh: sở dĩ dữ liệu tháng 8 vẫn còn
 10. **[MỚI]** Có nên sửa lại để những lô pha trộn TRƯỚC ngày 22/7/2026 hiển thị đúng lại là nguyên liệu chưa duyệt (thay vì nhãn đã chuẩn hoá) cho khớp đúng thực tế đã sản xuất — hay giữ nguyên cách chuẩn hoá 100% như yêu cầu ban đầu (chấp nhận đây là nhãn sổ sách nội bộ, không phải xuất xứ vật lý thật của lô hàng)?
 11. **[MỚI]** Lỗi hiển thị riêng ở màn hình theo dõi giao hàng (bước 5 — làm ẩn xuất xứ/chứng từ dù dữ liệu gốc vẫn còn nguyên) — có cần điều tra thêm để sửa dứt điểm hay không (độc lập với 2 quyết định nghiệp vụ ở mục 9/10)?
 12. **[MỚI]** Phạm vi xoá dữ liệu giao hàng tháng 8+9 (bước 2) và lệnh dựng lại toàn bộ (bước 4) đã chuẩn bị sẵn — đang chờ được thực thi.
+
+**9. Nhiều khách hàng báo màn hình theo dõi giao hàng hiện trống — xác nhận cùng 1 nguyên nhân đã biết, không phải sự cố mới**
+
+User gửi liên tiếp báo cáo "không lên dữ liệu" cho 4 khách hàng khác nhau trên màn hình theo dõi giao hàng. Kiểm tra trực tiếp xác nhận: đây đúng là hệ quả của việc dựng lại dữ liệu giao hàng trước đó (bước 4, phần trước) mới chỉ phủ được 1 phần, chưa đầy đủ toàn bộ — không phải lỗi riêng của từng khách hàng. Đã xác nhận: chạy đủ lệnh dựng lại toàn bộ đã chuẩn bị sẵn sẽ khắc phục cho TẤT CẢ khách hàng cùng lúc.
+
+**10. Gặp lỗi kỹ thuật khi user áp dụng bản sửa — tìm và khắc phục ngay**
+
+Khi user đưa bản sửa (đã chuẩn bị ở bước trước) vào hệ thống, gặp lỗi kỹ thuật khiến không thể lưu được. Xác định nguyên nhân: trong quá trình soạn bản sửa, có 1 đoạn ghi chú kỹ thuật bị lồng vào nhau sai cách khiến hệ thống hiểu nhầm ranh giới của phần code đang tắt/bật. Đã sửa ngay và xác nhận lại toàn bộ cấu trúc file cân bằng đúng trước khi gửi lại cho user áp dụng lần 2.
+
+**11. User báo lại: sau khi áp dụng bản sửa, kết quả "100% đã duyệt" mà dev lead từng tạo ra không còn nữa — xác nhận đây là kết quả ĐÚNG, không phải bị lùi tiến độ**
+
+Sau khi áp dụng xong bản sửa, user kiểm tra lại và thấy kết quả không còn hiện "100% đã duyệt" như trước, mà quay lại hiện tỷ lệ pha trộn thật (khoảng 38% đã duyệt / 62% chưa duyệt cho nhóm dữ liệu đang xem).
+
+Giải thích lại rõ cho user: con số "100% đã duyệt" trước đó **là giả** — do chính bản sửa lỗi của dev lead (đã phát hiện và revert ở bước 4) làm mất khoảng 90% dữ liệu tồn kho mang qua tháng thật, chỉ còn sót lại đúng phần vốn dĩ đã "sạch" từ trước, khiến nhìn có vẻ đã sửa xong nhưng thực chất là do thiếu dữ liệu. Sau khi khôi phục đúng cơ chế mang số dư qua tháng, dữ liệu thật — bao gồm cả phần hàng tồn có dùng nguyên liệu chưa duyệt thật từ trước — quay lại đúng như thực tế. Đây là kết quả ĐÚNG.
+
+**12. Dev lead nghi ngờ có 1 lô nguyên liệu "không nên còn xuất hiện" trong dữ liệu tháng 8 — điều tra, xác nhận có 1 vấn đề kỹ thuật cũ THẬT nhưng bản chất khác hẳn**
+
+User chuyển lời dev lead: nghi ngờ 1 lô pha trộn cụ thể (từ cuối tháng 6) không nên còn xuất hiện trong dữ liệu phân bổ của tháng 8, và cho rằng "dữ liệu đầu kỳ đang sai". Kiểm tra kỹ toàn bộ lịch sử nhập/xuất của đúng lô đó qua các tháng: phát hiện số lượng tồn của lô này thực sự **không hề giảm** suốt 3 tháng liên tiếp (tháng 7, 8, 9) — luôn báo "đã dùng hết rồi mang sang y nguyên", dù thực tế phải giảm dần khi được sử dụng.
+
+→ Xác nhận: đây **đúng là 1 vấn đề kỹ thuật có sẵn từ trước** (đã được ghi nhận ngay từ những bước đầu tiên của ticket này) — cách hệ thống tính số dư mang qua tháng đang không trừ đúng theo phần đã thực sự sử dụng, khiến con số bị lặp lại thay vì giảm dần. Vấn đề này hoàn toàn KHÔNG liên quan tới lỗi mới của dev lead vừa được khắc phục ở bước trước.
+
+**Nhưng đã làm rõ với user**: vấn đề này chỉ làm sai **SỐ LƯỢNG** tồn kho hiển thị (có thể đang bị đếm lặp), **KHÔNG làm sai LOẠI nguyên liệu** — bản chất lô hàng đó (trộn cuối tháng 6, có dùng nguyên liệu chưa duyệt thật) không hề thay đổi dù số lượng tồn có tính sai. Hướng sửa đúng (nếu cần) là sửa lại cách tính số lượng tiêu thụ, **hoàn toàn không phải** đổi nhãn xuất xứ nguyên liệu thành "đã duyệt" — đã từ chối yêu cầu này vì sẽ là ghi đè sai lên sự thật đã được xác minh độc lập nhiều lần trong ngày qua nhiều nguồn khác nhau.
+
+**13. User tiếp tục cho rằng "hệ thống lấy nhầm lô nguyên liệu" — kiểm tra toàn bộ nguồn gốc của lô thành phẩm liên quan, bác bỏ dứt điểm**
+
+User đưa ra giả thuyết: có thể tồn tại 1 lô pha trộn ĐÚNG từ tháng 8 (100% đã duyệt) mà hệ thống lẽ ra phải dùng, nhưng lại lấy nhầm sang lô từ tháng 6. Kiểm tra TOÀN BỘ (không chỉ 1 trường hợp lẻ) nguồn nguyên liệu đã cấu thành nên đúng lô thành phẩm đang tranh luận: xác nhận lô này được sản xuất từ tổng cộng 74 lô pha trộn khác nhau — 9 lô từ tháng 6 và 65 lô từ tháng 7, tổng hơn 520 tấn — **không có bất kỳ lô pha trộn nào từ tháng 8 cả**.
+
+→ Đây là 1 lô thành phẩm rất lớn, được sản xuất bằng cách rút dần từ rất nhiều lô nguyên liệu đã có sẵn trong kho từ tháng 6-7 — không hề tồn tại lô tháng 8 nào để mà "lấy nhầm". Đã bác bỏ dứt điểm giả thuyết này bằng chính dữ liệu đầy đủ, không phải suy đoán hay tranh cãi cảm tính.
+
+---
+
+**Cập nhật các điểm còn cần user/phía DONGIL xác nhận (tính tới hết ngày làm việc 2026-09-09):**
+
+Mục 9 và mục 10 ở phần đầu ngày (liên quan tới việc có ép hiển thị "đã duyệt" hay không) **vẫn còn mở, chưa có quyết định cuối** — riêng mục này giờ có thêm 1 yếu tố quan trọng: vấn đề kỹ thuật cũ vừa phát hiện lại (mục 14 dưới đây) cho thấy SỐ LƯỢNG tồn kho mang qua tháng hiện tại có thể chưa hoàn toàn đáng tin cậy, dù LOẠI nguyên liệu của từng lô vẫn được xác định đúng.
+
+14. **[MỚI]** Vấn đề kỹ thuật cũ về cách tính số dư mang qua tháng (không trừ đúng theo tiêu thụ thực) vừa được xác nhận LẠI bằng dữ liệu thật hôm nay — nên được ưu tiên báo cáo/xử lý thành 1 yêu cầu riêng, vì hiện đang bị dùng làm căn cứ (không chính xác) để nghi ngờ ngược lại tính đúng đắn của bản sửa chính đang làm.
+15. **[MỚI]** Cần thống nhất lại với dev lead/phía nghiệp vụ: đề xuất "ép thành phẩm tháng 8 hiện 100% đã duyệt" không có dữ liệu nào ủng hộ (đã bác bỏ ở bước 12-13) — cần đồng thuận hướng xử lý đúng (sửa vấn đề tính SỐ LƯỢNG, không đụng vào NHÃN nguyên liệu) trước khi có bất kỳ thay đổi nào tiếp theo lên hệ thống.

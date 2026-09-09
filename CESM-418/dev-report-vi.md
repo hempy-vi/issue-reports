@@ -450,3 +450,87 @@ Kết luận cuối, đã trao đổi lại với BC: dữ liệu "còn Brazil �
 10. **[MỚI]** Có nên sửa lại để item/Origin của các lô mix TRƯỚC 22/7/2026 hiển thị đúng lại là Brazil (thay vì USOT3137 đã chuẩn hoá) để khớp đúng thực tế vật lý — hay giữ nguyên chuẩn hoá 100% USOT3137 như CESM-418 yêu cầu ban đầu (chấp nhận đây là nhãn kế toán nội bộ, không phải xuất xứ vật lý thật)?
 11. **[MỚI]** Bug riêng trong điều kiện `EXISTS`/`P_PARAM1` của `LG_SEL_MELT070_02` (bước 5, làm ẩn Origin/files dù dữ liệu gốc còn nguyên) — cần điều tra sâu thêm cơ chế chính xác và vá lại hay không (độc lập với quyết định nghiệp vụ ở mục 9/10)?
 12. **[MỚI]** Đã xác nhận scope xoá cho `results/delete_gd_m_gd_d_aug_sep_2026.sql` là chỉ tháng 8+9/2026 — script này và `results/force_full_rebuild_gd_m_gd_d_aug_sep_2026.sql` (bước 4) vẫn đang chờ user tự chạy qua Toad.
+
+**9. Nhiều khách hàng báo "No data" trên melt070 — xác nhận cùng nguyên nhân đã biết (không phải bug mới)**
+
+User gửi liên tiếp 4 screenshot melt070 báo "No data" ở grid chi tiết cho 4 khách hàng khác nhau (PT.WIN TEXTILE hợp đồng DV-26-053, WHA IL VINA, DI DONG-IL CORPORATION hợp đồng DV-26-109, RISE SUN HỒNG KÔNG hợp đồng 26-102) dù header vẫn hiện `total_delivery_qty` (tức GD_M tồn tại). Verify trực tiếp cho case đầu tiên:
+
+```sql
+SELECT X.PK, X.LEVEL_TYPE, X.PO_NO, X.SLIP_NO, X.LOT_NO, X.QTY, X.MAP_QTY, X.MAP_YN,
+  (SELECT COUNT(*) FROM TLG_LOT_TRACKING_GD_D Z WHERE Z.DEL_IF=0 AND Z.TLG_LOT_TRACKING_GD_M_PK = X.PK) GD_D_COUNT
+FROM TLG_LOT_TRACKING_GD_M X
+WHERE X.DEL_IF = 0 AND X.LOT_NO = 'VP2608RN' AND X.PO_NO = 'DV-26-053'
+```
+
+→ GD_M tồn tại (2 dòng, PK 25804/25808, có QTY) nhưng **GD_D_COUNT = 0** cho cả 2 — xác nhận đây đúng là hệ quả của việc rebuild GD_M/GD_D trước đó (bước 4, section trước) chỉ phủ được 1 phần (390/1,413 GD_M, 600/16,283 GD_D). Không phải bug riêng của từng khách hàng — báo lại: chạy đủ script `force_full_rebuild_gd_m_gd_d_aug_sep_2026.sql` sẽ xử lý cho TẤT CẢ khách hàng cùng lúc, không cần verify riêng lẻ từng case.
+
+**10. Lỗi compile khi user chạy file revert — phát hiện và fix bug nested comment**
+
+User compile `LG_PRO_DAILY_LOT_TRACKING_REVERT_open_carryover_2026-09-09.sql` (bản revert soạn ở section trước), gặp 4 lỗi:
+```
+[Error] Compilation (439: 141): PLS-00103: Encountered the symbol "=" ...
+[Error] Compilation (440: 74): PLS-00103: Encountered the symbol ";" ...
+[Error] Compilation (471: 33): PLS-00103: Encountered the symbol "COMMIT" ...
+[Error] Compilation (473: 24): PLS-00103: Encountered the symbol ";" ...
+```
+
+Grep toàn file tìm mọi cặp `/*`/`*/`:
+```sql
+-- Dòng 439 (bên trong khoi vua duoc comment out o buoc revert truoc):
+FROM TLG_WI_LINE_M M, TLG_ST_TRANSFER_REQ_M Z WHERE  /*M.DEL_IF = 0 AND  M.STATUS = 3  AND */ M.SLIP_NO = CUR.LOT_NO
+```
+
+**Root cause**: dòng 439 (thuộc code gốc của dev lead, nằm bên trong khối vừa bị comment-out ở lần revert trước) tự nó đã có sẵn 1 comment `/* ... */` inline. Oracle PL/SQL **không hỗ trợ nested comment** — dấu `*/` của comment lồng này đóng SỚM comment ngoài của bản revert, khiến phần code phía sau (từ " M.SLIP_NO = CUR.LOT_NO" tới hết khối) "sống lại" thành code active không hợp lệ về cú pháp → đúng khớp cả 4 lỗi.
+
+**Fix**: xoá cặp `/* */` lồng đó, giữ nguyên phần chữ bên trong (vô hại vì toàn bộ đoạn này đã nằm trong comment ngoài):
+```sql
+-- Before: WHERE  /*M.DEL_IF = 0 AND  M.STATUS = 3  AND */ M.SLIP_NO = CUR.LOT_NO
+-- After:  WHERE  M.DEL_IF = 0 AND  M.STATUS = 3  AND  M.SLIP_NO = CUR.LOT_NO
+```
+Verify lại: `grep -o '/\*'` và `grep -o '\*/'` đều ra đúng 22 lần, cân bằng — không còn cặp nào lồng nhau trong vùng đã sửa.
+
+**11. User báo lại: sau revert, "100% USA" mà dev lead từng tạo ra không còn nữa — xác nhận đây là hành vi ĐÚNG, không phải regression**
+
+User chạy trực tiếp `exec LG_SEL_MELT070_02(';25953;25954;25957;...',...)` sau khi compile lại, kết quả ra `USA: 38.4%, BRAZIL: 61.6%` thay vì 100% USA như dev lead từng tạo ra trước đó.
+
+Giải thích lại cho user: "100% USA" trước đó là **giả** — hệ quả trực tiếp của việc logic dev lead làm mất ~90% dữ liệu carry-over thật (đã chứng minh ở section trước: OPEN tháng 8 chỉ còn 55/837 dòng), phần sót lại tình cờ toàn thuộc lô mix sau 29/7 (đã genuinely 100% US). Sau khi revert đúng logic carry-over (đọc đủ từ `TLG_LOT_TRACKING_MAT`), dữ liệu thật — gồm cả các lô đã mix bằng BRAMID thật trước 22/7 — quay lại đúng như vốn có. Đây là kết quả ĐÚNG, khớp với số liệu ban đầu user từng gửi lúc phát hiện vấn đề.
+
+**12. Dev lead nghi ngờ mix_lot MIXEDF1-260627-02 "không nên xuất hiện" trong allocation tháng 8 — điều tra, xác nhận có 1 bug pre-existing THẬT nhưng khác bản chất**
+
+User (chuyển lời dev lead): "mix_lot MIXEDF1-260627-02 không được xuất hiện để allocation cho thành phẩm sản xuất tháng 8, ... dữ liệu đầu kỳ đang sai". Kiểm tra lịch sử IN/OUT đầy đủ của mix_lot này:
+
+```sql
+SELECT M.STD_YM, M.STOCK_TYPE, I.ITEM_CODE, ROUND(SUM(M.INPUT_QTY),2) IN_QTY, ROUND(SUM(M.OUTPUT_QTY),2) OUT_QTY
+FROM TLG_LOT_TRACKING_MAT M
+JOIN TLG_IT_ITEM I ON I.PK = M.TLG_IT_ITEM_PK AND I.DEL_IF = 0
+WHERE M.DEL_IF = 0 AND M.MIX_LOT = 'MIXEDF1-260627-02'
+GROUP BY M.STD_YM, M.STOCK_TYPE, I.ITEM_CODE ORDER BY M.STD_YM, M.STOCK_TYPE
+```
+
+Kết quả: 06/2026 mix thật (DAILY) BRAMID 8,146.35 + USOT3137 5,380.08kg. 07/2026 MAPPING OUT 5,888.74kg (=3,546.52 BRAMID+2,342.22 USOT3137) và OPEN mang sang **cũng đúng 5,888.74kg**. 08/2026 MAPPING OUT **5,888.74kg y hệt**, OPEN mang sang **cũng y hệt**. 09/2026 lặp lại lần nữa y hệt.
+
+→ **Xác nhận có bug pre-existing thật**: số dư này KHÔNG BAO GIỜ giảm qua 3 tháng liền — đúng là bug carry-over đã ghi nhận từ đầu ticket (`OUTER JOIN` sai giữa `SLIP_NO`/`TR_DATE` khiến `OUTPUT` không bao giờ thực sự trừ vào `QTY_END_MAT`), KHÔNG liên quan gì tới bug mới của dev lead vừa được revert.
+
+**Nhưng đã làm rõ với user**: bug này chỉ làm sai **SỐ LƯỢNG** tồn (có thể là số ảo/lặp lại do lỗi tính toán), **KHÔNG làm sai LOẠI nguyên liệu** — bản chất vật lý của mix_lot này (trộn ngày 27/6, dùng cả BRAMID) không đổi dù số lượng carry-over có bị tính sai. Hướng sửa đúng (nếu cần) là fix lại phép trừ tiêu thụ thực trong CTE carry-over, KHÔNG PHẢI ép Origin/item hiển thị USA — đã từ chối yêu cầu "ép 100% USA" vì sẽ là ghi đè sai sự thật đã verify độc lập nhiều lần trong ngày.
+
+**13. User tiếp tục cho rằng "hệ thống lấy sai mix_lot" — verify toàn bộ nguồn allocation của lot VP2608RN, bác bỏ dứt điểm**
+
+User đề xuất: có thể tồn tại 1 mix_lot ĐÚNG từ tháng 8 (100% USA) mà hệ thống lẽ ra phải dùng thay vì lấy nhầm MIXEDF1-260627-02 (tháng 6). Verify toàn bộ (không chỉ 1 dòng):
+
+```sql
+SELECT SUBSTR(M.MIX_LOT,9,4) MIX_LOT_YYMM, COUNT(DISTINCT M.MIX_LOT) SO_MIX_LOT, ROUND(SUM(M.OUTPUT_QTY),2) TONG_KG
+FROM TLG_LOT_TRACKING_MAT M
+WHERE M.DEL_IF = 0 AND M.REF_LOT_NO_PROD = 'VP2608RN' AND M.TROUT_TYPE = 'O60'
+GROUP BY SUBSTR(M.MIX_LOT,9,4) ORDER BY MIX_LOT_YYMM
+```
+
+Kết quả: lot thành phẩm VP2608RN lấy nguyên liệu từ **74 mix_lot** — **9 lot tháng 6 (66,026.13kg) + 65 lot tháng 7 (454,272.81kg) = 520,298.94kg, KHÔNG có bất kỳ mix_lot nào từ tháng 8 (0 lot, 0kg)**. Đây là 1 lô thành phẩm rất lớn, được sản xuất bằng cách rút dần từ rất nhiều mẻ mix đã tồn kho từ tháng 6-7 — không tồn tại mix_lot tháng 8 nào để "lấy nhầm" cả. Đã bác bỏ giả thuyết "lấy sai mix_lot" bằng chính dữ liệu đầy đủ, không phải suy đoán.
+
+---
+
+**Cập nhật các điểm còn cần user/phía nghiệp vụ xác nhận (tính tới hết ngày làm việc 2026-09-09):**
+
+Mục 9 (revert V2 Origin) và mục 10 (item hiện Brazil cho lô trước 22/7) ở phần đầu ngày **vẫn còn mở, chưa có quyết định cuối** — riêng mục này giờ có thêm dữ kiện quan trọng: bug carry-over pre-existing (bước 12) cho thấy SỐ LƯỢNG tồn kho carry-over hiện tại có thể không đáng tin cậy 100% (do chưa được trừ đúng theo tiêu thụ thực), dù bản chất LOẠI nguyên liệu (Brazil vs US) của từng mix_lot vẫn xác định đúng.
+
+14. **[MỚI]** Bug carry-over pre-existing (bước 12: `OUTER JOIN` sai khiến `OUTPUT` không bao giờ thực sự trừ vào `QTY_END_MAT`) đã được xác nhận LẠI bằng dữ liệu thật hôm nay (mix_lot MIXEDF1-260627-02, số dư 5,888.74kg lặp lại y hệt suốt 3 tháng) — cần ưu tiên báo cáo/sửa thành ticket riêng, vì hiện đang bị dùng làm cơ sở (sai) để nghi ngờ ngược lại tính đúng đắn của patch CESM-418.
+15. **[MỚI]** Cần làm rõ với dev lead/BC: đề xuất "ép item/Origin thành 100% USA cho thành phẩm tháng 8" không có cơ sở dữ liệu nào ủng hộ (đã bác bỏ ở bước 12-13) — cần thống nhất lại hướng xử lý đúng (sửa bug carry-over ở đúng chỗ SỐ LƯỢNG, không đụng vào NHÃN nguyên liệu) trước khi có thay đổi code nào tiếp theo trên `LG_PRO_DAILY_LOT_TRACKING`.

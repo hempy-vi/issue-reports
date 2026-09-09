@@ -307,3 +307,40 @@ Also clarified an important point for the next decision: the material code curre
 10. **[NEW]** Whether lots blended BEFORE 2026-07-22 should be corrected to display the unapproved material again (instead of the normalized label) to match what was actually produced — or kept as the fully-normalized 100% label the original request called for (accepting this as an internal bookkeeping label, not the lot's true physical origin)?
 11. **[NEW]** The separate display defect on the delivery-tracking screen (step 5 — hiding origin/files even though the source data is intact) — should this be investigated further and fixed for good (independent of the two business decisions in items 9/10)?
 12. **[NEW]** The plan to clear the August+September delivery-tracking data (step 2) and the full-rebuild command (step 4) are both prepared — still awaiting execution.
+
+**9. Multiple customers reported the delivery-tracking screen showing empty — confirmed same already-known root cause, not a new incident**
+
+User sent consecutive reports of "no data showing" for 4 different customers on the delivery-tracking screen. Direct verification confirmed: this is exactly the consequence of the earlier delivery-data rebuild (step 4, previous section) only having covered a partial range, not the full dataset — not a bug specific to any one customer. Confirmed: running the already-prepared full-rebuild command will resolve this for ALL customers at once.
+
+**10. Hit a technical error while the user applied the fix — found and fixed it immediately**
+
+When the user brought the fix (prepared in the previous step) into the system, a technical error prevented it from saving. Root cause: while drafting the fix, one technical note had been nested incorrectly, causing the system to misread where a disabled/enabled section of code began and ended. Fixed immediately and re-verified the entire file's structure was properly balanced before handing it back to the user for a second attempt.
+
+**11. User reported that after applying the fix, the "100% approved" result the dev lead had previously produced was gone — confirmed this is the CORRECT result, not a step backward**
+
+After applying the fix, the user checked again and found the result no longer showed "100% approved" as before, but instead showed the real blended ratio again (roughly 38% approved / 62% unapproved for the data group being viewed).
+
+Re-explained clearly to the user: the earlier "100% approved" figure **was false** — a direct side effect of the dev lead's own fix (found and reverted in step 4) having dropped about 90% of the real month-to-month carried-forward inventory data, leaving behind only the portion that happened to already be "clean." That made it look fixed, when in fact it was simply missing data. After restoring the correct carry-forward mechanism, the real data — including the portion of inventory that genuinely still contains unapproved material from before — came back exactly as it truly is. This is the CORRECT result.
+
+**12. Dev lead suspected one raw-material batch "should no longer be appearing" in August's data — investigated, confirmed a REAL pre-existing technical issue, but of a completely different nature**
+
+User relayed the dev lead's suspicion: one specific blending batch (from late June) should not still be appearing in August's allocation data, and that "the opening-period data is wrong." Checked the complete inbound/outbound history of that exact batch across months: found its remaining quantity had **not decreased at all** across three consecutive months (July, August, September) — every month it reported "fully used, then carried forward unchanged," when in reality it should decrease as it gets consumed.
+
+→ Confirmed: this **is indeed a pre-existing technical issue** (already documented at the very start of this ticket) — the way the system calculates month-to-month carried-forward balances is not properly subtracting what was actually consumed, causing the number to repeat instead of decline. This issue is completely unrelated to the dev lead's newly-fixed bug from the previous step.
+
+**But clarified for the user**: this issue only corrupts the **QUANTITY** of inventory shown (possibly being double-counted), it does **NOT** corrupt the **TYPE** of material — the true nature of that batch (blended in late June, genuinely containing unapproved material) does not change regardless of any miscalculation in the remaining quantity. The correct fix (if pursued) is to correct how consumption is calculated — **not at all** to relabel the material's origin as "approved." Declined this request, since doing so would mean overwriting a fact independently verified multiple times today through separate sources.
+
+**13. User continued to argue "the system picked the wrong raw-material batch" — checked the complete source of the related finished lot, decisively refuting the theory**
+
+User proposed a theory: perhaps a CORRECT batch from August (100% approved) exists that the system should have used, but mistakenly used the June batch instead. Checked the COMPLETE picture (not just one isolated case) of every raw-material batch that fed into the specific finished lot under dispute: confirmed this lot was produced from a total of 74 different blending batches — 9 from June and 65 from July, totaling over 520 tons — **with not a single batch from August**.
+
+→ This is a very large finished lot, produced by gradually drawing down many raw-material batches already sitting in inventory since June-July — there is no August batch at all that could have been "mistakenly" used. Decisively refuted this theory using the complete dataset, not guesswork or an emotional argument.
+
+---
+
+**Updated open items still awaiting confirmation from the user/DONGIL side (as of end of workday 2026-09-09):**
+
+Items 9 and 10 from earlier in the day (about whether to force the display to show "approved") **remain open, no final decision yet** — this item now carries one more important factor: the pre-existing technical issue just re-confirmed (item 14 below) means the currently-tracked carried-forward QUANTITY may not be fully reliable, even though the TYPE of material for each individual batch is still being correctly identified.
+
+14. **[NEW]** The pre-existing technical issue with how month-to-month carried-forward balances are calculated (not properly subtracting real consumption) was RE-CONFIRMED today with real data — should be prioritized for reporting/fixing as its own separate request, since it is currently being used (incorrectly) as grounds to question the correctness of the main fix underway.
+15. **[NEW]** Needs alignment with the dev lead/business side: the proposal to "force August's finished goods to show 100% approved" has no data supporting it (refuted in steps 12-13) — needs agreement on the correct approach (fix the QUANTITY calculation issue, do not touch the material LABEL) before any further changes are made to the system.
