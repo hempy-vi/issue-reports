@@ -139,3 +139,94 @@ File deliverable: `SAMIL_SB1.13_RnD_Item_Register_20260909.xlsx` và `SAMIL_SB1.
 2. SB1.16 gồm cả item active lẫn inactive (cột `Use` để tự lọc), thứ tự dòng theo PK thay vì theo tên item như màn hình gốc.
 
 Chưa gửi file cho requester — session không có kết nối email/Jira attachment, cần user tự đính kèm file vào email/Jira comment sau khi xem qua 2 giả định trên.
+
+**11. Follow-up từ business: file SB1.16 thiếu Yarn Code**
+
+Sau khi nhận 2 file, Ms. Oanh (qua đồng nghiệp "Ant") phản hồi: file SB1.16 hiện chỉ có "Yarn 1".."Yarn 9" (tên/mô tả yarn dạng text, vd "COTTON 40S CM") — chỉ có tên thì khó dò/tra cứu, cần thêm cột **Yarn Code** (mã yarn) ngay TRƯỚC mỗi cột tên yarn tương ứng.
+
+Tra lại source `sa100011.aspx` (popup chọn Yarn, mở từ nút "Yarn" trên form SB1.16) — dùng procedure `sp_sel_sa100011`, grid có đúng 3 cột:
+
+```html
+<gw:grid id="idGrid" header="_PK|Yarn Code|Yarn Name" ... />
+```
+
+Xác nhận: bảng `SA_YARN_CODE` có 1 cột "Yarn Code" tách biệt hoàn toàn với cột `YARN` (tên, đang dùng làm "Yarn 1".."Yarn 9") và với `PK` (khoá nội bộ, đã có sẵn trong file dạng cột "Yarn0X PK" nhưng không phải cái Ms. Oanh cần) — đúng là cái cần thêm. Chưa biết tên cột thật trong `SA_YARN_CODE` (chỉ mới thấy header hiển thị), cần lấy full source `SP_SEL_SA100011` để xác định.
+
+**12. Blocker — mất kết nối tới Oracle DB (network-level, không phải docker)**
+
+Lúc thử gọi `/api/db/query/read-only` để lấy source `SP_SEL_SA100011`, phát hiện:
+- `oracle-mcp`: lỗi `CONNECTION_CLOSED`.
+- `oracle-api-samil` (container Docker vẫn đang chạy "Up", đã thử `docker compose ... start oracle-api`): log báo lỗi JDBC:
+  ```
+  oracle.net.ns.NetException: ORA-12170: Cannot connect. TCP connect timeout of 20000ms for host 192.168.240.204 port 1521.
+  ```
+- Test trực tiếp network từ máy:
+  ```
+  Test-NetConnection -ComputerName 192.168.240.204 -Port 1521
+  → TcpTestSucceeded: False, PingSucceeded: False
+  ```
+
+Kết luận: DB host `192.168.240.204` không reachable ở tầng network từ máy đang chạy session (khả năng cao do VPN nội bộ SAMIL bị rớt) — không liên quan gì tới docker/`oracle-api` (container vẫn khoẻ mạnh, chỉ là không kết nối được tới DB backend). Không phải lỗi tự sửa được từ phía dev — đã dừng lại, báo user kiểm tra kết nối mạng/VPN.
+
+**13. Kết nối lại — lấy source `SP_SEL_SA100011`, xác định đúng tên cột**
+
+Sau khi user xác nhận đã reconnect VPN, test lại `/api/db/query/read-only` bằng `SELECT 1 FROM DUAL` — thành công. Lấy full source `SP_SEL_SA100011`:
+
+```sql
+PROCEDURE SP_SEL_SA100011 (P_YARN VARCHAR2, P_CURSOR OUT SYS_REFCURSOR)
+IS
+BEGIN
+   OPEN P_CURSOR FOR
+        SELECT A.PK, A.YARN_CODE, A.YARN
+          FROM SA_YARN_CODE A
+         WHERE     DEL_IF = 0
+               AND USE = '-1'
+               AND (   UPPER (A.YARN_CODE) LIKE '%' || UPPER (P_YARN) || '%'
+                    OR UPPER (A.YARN) LIKE '%' || UPPER (P_YARN) || '%'
+                    OR P_YARN IS NULL)
+      ORDER BY A.YARN_CODE;
+END SP_SEL_SA100011;
+```
+
+Xác nhận: `SA_YARN_CODE.YARN_CODE` chính là cột "Yarn Code" cần thêm — tách biệt hoàn toàn với `SA_YARN_CODE.YARN` (tên/mô tả).
+
+Nhân tiện phát hiện + sửa 1 lỗi sót từ bước 4 trước đó: file lưu `queries/04_export_sb116_item_code_inquiry.sql` trong session vẫn còn alias cũ `CRT_BY "Create By"` — bản đã chạy full export lúc trước đã dùng đúng `"Input By"` (do bị SQL guard chặn chữ "Create") nhưng file lưu lại chưa từng được đồng bộ lại. Sửa lại cho khớp.
+
+**14. Sửa export query SB1.16 — thêm 9 cột Yarn Code**
+
+Sửa `queries/04_export_sb116_item_code_inquiry.sql`: thêm `YARNn.YARN_CODE "YarnNN Code"` ngay trước mỗi cột `YARNn "Yarn N"` tương ứng (cả outer SELECT lẫn inner SELECT), cho cả 9 slot yarn. Không cần thêm join mới — 9 bảng `SA_YARN_CODE YARN1..YARN9` đã được outer-join sẵn từ trước, chỉ cần select thêm cột `YARNn.YARN_CODE`:
+
+```sql
+-- trước:
+A.WIDTH, A.GRAM, A.M2, A.YARN01_PK,
+YARN1.YARN YARN1, A.PER01, A.YARN02_PK,
+...
+-- sau:
+A.WIDTH, A.GRAM, A.M2, A.YARN01_PK, YARN1.YARN_CODE YARN01_CODE,
+YARN1.YARN YARN1, A.PER01, A.YARN02_PK, YARN2.YARN_CODE YARN02_CODE,
+...
+```
+
+Test preview 5 dòng qua `/api/db/query/read-only` trước khi chạy full — cột "Yarn01 Code" ra đúng giá trị (`000399`, `000267`, `001019`...) đứng ngay trước "Yarn 1" tương ứng ("COTTON 40S CM", "COTTON 30S CM", "COTTON 50S CM"...).
+
+**15. Chạy lại full export SB1.16 + kiểm tra tính toàn vẹn**
+
+Chạy lại full export: 8.548 dòng, 65 cột (56 cột cũ + 9 cột Yarn Code) — khớp đúng số dòng của lần chạy trước đó. Kiểm tra lại: đếm `PK` distinct so với tổng số dòng — khớp tuyệt đối (8.548 = 8.548) → không có dòng nào bị nhân đôi do join.
+
+**16. Build lại file `.xlsx`, verify, bàn giao**
+
+Build lại file Excel bằng đúng pipeline đã dựng ở bước 8 (`build_xlsx.js` + zip qua PowerShell `System.IO.Compression`). Đặt tên file khác bản gốc (thêm hậu tố `_v2`) để không đè lên file Ms. Oanh đang mở sẵn:
+
+```
+results/SAMIL_SB1.16_Item_Code_Inquiry_20260909_v2.xlsx
+```
+
+Verify lại bằng Excel COM automation — mở thật file, đọc đúng số dòng/cột và đúng thứ tự cột PK → Code → Name:
+
+```
+Rows: 8549 (header+data)  Cols: 65
+Yarn01 PK header: "Yarn01 PK" | Yarn01 Code header: "Yarn01 Code" | Yarn 1 header: "Yarn 1"
+Row 2: Yarn01 Code = 000399, Yarn 1 = COTTON 40S CM
+```
+
+File `SAMIL_SB1.13_RnD_Item_Register_20260909.xlsx` không đổi (yêu cầu chỉ áp dụng cho SB1.16). Báo user: cần thông báo Ms. Oanh đóng file SB1.16 bản cũ (chưa có Yarn Code) và dùng bản `_v2` thay thế.

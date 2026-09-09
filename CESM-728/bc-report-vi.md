@@ -51,3 +51,33 @@ Máy thực hiện công việc không có kết nối internet nên không cài
 2. SB1.16 gồm cả item active lẫn inactive, thứ tự dòng trong file khác với thứ tự hiển thị trên màn hình gốc.
 
 File chưa được gửi cho requester — cần gửi thủ công qua email hoặc đính kèm vào ticket Jira sau khi xác nhận 2 điểm trên.
+
+**11. Phản hồi từ business: file SB1.16 cần thêm mã yarn**
+
+Sau khi nhận file, Ms. Oanh phản hồi lại: file SB1.16 hiện chỉ có tên yarn (mô tả dạng chữ), thiếu mã yarn (mã số dùng để tra cứu chính xác) nên khó dùng để đối chiếu — đề nghị bổ sung thêm mã yarn ngay bên cạnh (trước) mỗi cột tên yarn.
+
+Kiểm tra lại đúng màn hình tra cứu yarn trong hệ thống (nơi người dùng chọn yarn khi nhập liệu) và xác nhận: hệ thống có sẵn 1 trường riêng gọi là "mã yarn" — hoàn toàn tách biệt với tên yarn và với mã số nội bộ đã có sẵn trong file. Đây đúng là thông tin Ms. Oanh cần bổ sung.
+
+**12. Gặp sự cố mất kết nối tới hệ thống database**
+
+Trong lúc chuẩn bị lấy thông tin chi tiết để bổ sung mã yarn, phát hiện kết nối tới database bị mất — cả kênh kết nối chính lẫn kênh dự phòng đều báo lỗi timeout khi kết nối tới máy chủ database. Kiểm tra kỹ xác nhận đây là sự cố ở tầng kết nối mạng (nhiều khả năng do kết nối VPN nội bộ bị rớt), không phải lỗi phần mềm hay cấu hình — không thể tự khắc phục được từ phía xử lý dữ liệu. Đã tạm dừng và báo người phụ trách kiểm tra lại kết nối mạng/VPN.
+
+**13. Kết nối lại — xác nhận đúng trường dữ liệu cần bổ sung**
+
+Sau khi kết nối mạng được khôi phục, xác nhận lại kết nối database hoạt động bình thường, sau đó lấy đúng thông tin cấu trúc dữ liệu để xác nhận chắc chắn tên trường "mã yarn" trong hệ thống, đảm bảo lấy đúng dữ liệu mong muốn, không bị nhầm lẫn với tên yarn hay mã số nội bộ.
+
+Nhân dịp này cũng rà soát lại và sửa 1 chi tiết còn sót từ lần chuẩn bị dữ liệu trước — 1 tên cột trong file cấu hình lưu lại chưa khớp với tên cột thực tế đã dùng khi lấy dữ liệu lần trước (do bị hệ thống an toàn chặn nhầm 1 từ trùng tên với lệnh nhạy cảm) — đã đồng bộ lại cho khớp, không ảnh hưởng tới dữ liệu đã gửi trước đó.
+
+**14. Cập nhật lại cách lấy dữ liệu SB1.16 — bổ sung mã yarn**
+
+Cập nhật lại truy vấn lấy dữ liệu cho SB1.16: thêm cột "mã yarn" ngay trước mỗi cột "tên yarn" tương ứng (đủ cho cả 9 vị trí yarn có thể có trên 1 item), tận dụng dữ liệu đã có sẵn (không cần lấy thêm dữ liệu từ nguồn khác). Đã kiểm tra thử với 1 mẫu nhỏ (5 dòng) trước khi lấy toàn bộ — xác nhận mã yarn hiển thị đúng, đúng vị trí ngay trước tên yarn tương ứng.
+
+**15. Lấy lại toàn bộ dữ liệu SB1.16 + kiểm tra tính toàn vẹn**
+
+Lấy lại toàn bộ dữ liệu SB1.16 với cột mã yarn mới bổ sung: vẫn đúng 8.548 dòng như lần trước (không phát sinh thêm hay mất dòng nào), giờ có thêm 9 cột mã yarn mới. Kiểm tra lại một lần nữa, xác nhận không có dòng dữ liệu nào bị nhân đôi.
+
+**16. Tạo lại file Excel, xác nhận, bàn giao**
+
+Tạo lại file Excel với dữ liệu đầy đủ (bao gồm cột mã yarn mới), đặt tên file khác với bản trước (thêm hậu tố "_v2") để tránh ghi đè lên file Ms. Oanh đang mở sẵn. Mở lại file mới bằng chính phần mềm Excel để xác nhận file đúng, đủ dữ liệu, và cột mã yarn nằm đúng vị trí (ngay trước tên yarn) như yêu cầu.
+
+File SB1.13 không có thay đổi gì (yêu cầu bổ sung chỉ áp dụng cho SB1.16). Đã báo người phụ trách: cần thông báo Ms. Oanh đóng file SB1.16 bản cũ (chưa có mã yarn) và sử dụng bản mới (_v2) thay thế.

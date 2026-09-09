@@ -139,3 +139,94 @@ Deliverable files: `SAMIL_SB1.13_RnD_Item_Register_20260909.xlsx` and `SAMIL_SB1
 2. SB1.16 includes both active and inactive items (the `Use` column lets the recipient filter in Excel), and row order is by PK instead of by item name like the live screen.
 
 The files have not been sent to the requester yet — this session has no email/Jira-attachment connector, so the user needs to attach the files to an email or the Jira comment themselves after reviewing the 2 assumptions above.
+
+**11. Business follow-up: SB1.16 file is missing Yarn Code**
+
+After receiving the 2 files, Ms. Oanh (via colleague "Ant") gave feedback: the SB1.16 file only has "Yarn 1".."Yarn 9" (the yarn's text name/description, e.g. "COTTON 40S CM") — a name alone is hard to trace/look up, and a **Yarn Code** column is needed right BEFORE each corresponding yarn-name column.
+
+Checked the source of `sa100011.aspx` (the Yarn lookup popup, opened from the "Yarn" button on the SB1.16 form) — it uses procedure `sp_sel_sa100011`, and its grid has exactly 3 columns:
+
+```html
+<gw:grid id="idGrid" header="_PK|Yarn Code|Yarn Name" ... />
+```
+
+Confirmed: the `SA_YARN_CODE` table has a "Yarn Code" column, entirely separate from the `YARN` column (the name, already used as "Yarn 1".."Yarn 9") and from `PK` (the internal key, already present in the file as the "Yarn0X PK" columns, but not what Ms. Oanh needs) — exactly what needs to be added. The real column name in `SA_YARN_CODE` wasn't known yet (only the displayed header text), so the full source of `SP_SEL_SA100011` was needed to confirm it.
+
+**12. Blocker — lost connection to the Oracle DB (network-level, not a docker issue)**
+
+While attempting to call `/api/db/query/read-only` to fetch `SP_SEL_SA100011`'s source, found:
+- `oracle-mcp`: `CONNECTION_CLOSED` error.
+- `oracle-api-samil` (the docker container was still "Up"; tried `docker compose ... start oracle-api`): the container log showed a JDBC error:
+  ```
+  oracle.net.ns.NetException: ORA-12170: Cannot connect. TCP connect timeout of 20000ms for host 192.168.240.204 port 1521.
+  ```
+- Direct network test from the machine:
+  ```
+  Test-NetConnection -ComputerName 192.168.240.204 -Port 1521
+  → TcpTestSucceeded: False, PingSucceeded: False
+  ```
+
+Conclusion: the DB host `192.168.240.204` was unreachable at the network level from the machine running this session (most likely SAMIL's internal VPN had dropped) — unrelated to docker/`oracle-api` itself (the container was healthy, it simply couldn't reach the DB backend). Not something fixable from the dev side — stopped and asked the user to check the network/VPN connection.
+
+**13. Reconnected — fetched `SP_SEL_SA100011`'s source, confirmed the right column name**
+
+After the user confirmed the VPN was reconnected, retested `/api/db/query/read-only` with `SELECT 1 FROM DUAL` — succeeded. Fetched the full source of `SP_SEL_SA100011`:
+
+```sql
+PROCEDURE SP_SEL_SA100011 (P_YARN VARCHAR2, P_CURSOR OUT SYS_REFCURSOR)
+IS
+BEGIN
+   OPEN P_CURSOR FOR
+        SELECT A.PK, A.YARN_CODE, A.YARN
+          FROM SA_YARN_CODE A
+         WHERE     DEL_IF = 0
+               AND USE = '-1'
+               AND (   UPPER (A.YARN_CODE) LIKE '%' || UPPER (P_YARN) || '%'
+                    OR UPPER (A.YARN) LIKE '%' || UPPER (P_YARN) || '%'
+                    OR P_YARN IS NULL)
+      ORDER BY A.YARN_CODE;
+END SP_SEL_SA100011;
+```
+
+Confirmed: `SA_YARN_CODE.YARN_CODE` is exactly the "Yarn Code" column that needed to be added — entirely separate from `SA_YARN_CODE.YARN` (the name/description).
+
+Along the way, found and fixed a gap left over from step 4 earlier: the saved `queries/04_export_sb116_item_code_inquiry.sql` file still had the old alias `CRT_BY "Create By"` — the version actually used for the earlier full export run already used the correct `"Input By"` (since the SQL guard blocks the word "Create"), but the saved file itself had never been synced back. Fixed it to match.
+
+**14. Updated the SB1.16 export query — added 9 Yarn Code columns**
+
+Edited `queries/04_export_sb116_item_code_inquiry.sql`: added `YARNn.YARN_CODE "YarnNN Code"` immediately before each corresponding `YARNn "Yarn N"` column (in both the outer and inner SELECT), for all 9 yarn slots. No new join was needed — the 9 `SA_YARN_CODE YARN1..YARN9` tables were already outer-joined from before, so it was just a matter of selecting the extra `YARNn.YARN_CODE` column:
+
+```sql
+-- before:
+A.WIDTH, A.GRAM, A.M2, A.YARN01_PK,
+YARN1.YARN YARN1, A.PER01, A.YARN02_PK,
+...
+-- after:
+A.WIDTH, A.GRAM, A.M2, A.YARN01_PK, YARN1.YARN_CODE YARN01_CODE,
+YARN1.YARN YARN1, A.PER01, A.YARN02_PK, YARN2.YARN_CODE YARN02_CODE,
+...
+```
+
+Ran a 5-row preview via `/api/db/query/read-only` before running the full export — the "Yarn01 Code" column came back with the correct values (`000399`, `000267`, `001019`...), each sitting right before its matching "Yarn 1" value ("COTTON 40S CM", "COTTON 30S CM", "COTTON 50S CM"...).
+
+**15. Reran the full SB1.16 export + checked data integrity**
+
+Reran the full export: 8,548 rows, 65 columns (the original 56 plus 9 new Yarn Code columns) — matching the exact row count from the earlier run. Rechecked by counting distinct `PK` against total row count — an exact match (8,548 = 8,548) → no row was duplicated by a join.
+
+**16. Rebuilt the `.xlsx` file, verified it, and handed it off**
+
+Rebuilt the Excel file using the exact same pipeline built in step 8 (`build_xlsx.js` plus zipping via PowerShell `System.IO.Compression`). Named the file differently from the original (added a `_v2` suffix) so it wouldn't overwrite the file Ms. Oanh already had open:
+
+```
+results/SAMIL_SB1.16_Item_Code_Inquiry_20260909_v2.xlsx
+```
+
+Verified again via Excel COM automation — opened the actual file, confirmed the correct row/column counts and the correct PK → Code → Name column order:
+
+```
+Rows: 8549 (header+data)  Cols: 65
+Yarn01 PK header: "Yarn01 PK" | Yarn01 Code header: "Yarn01 Code" | Yarn 1 header: "Yarn 1"
+Row 2: Yarn01 Code = 000399, Yarn 1 = COTTON 40S CM
+```
+
+`SAMIL_SB1.13_RnD_Item_Register_20260909.xlsx` is unchanged (the request only applied to SB1.16). Told the user: Ms. Oanh needs to close the old SB1.16 file (no Yarn Code) and use the `_v2` file instead.

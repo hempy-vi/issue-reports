@@ -51,3 +51,33 @@ Both Excel files are ready: item data for SB1.13 (R&D Item Register) and SB1.16 
 2. SB1.16 includes both active and inactive items, and the row order in the file differs from the order shown on the live screen.
 
 The files have not been sent to the requester yet — they need to be sent manually via email or attached to the Jira ticket after the 2 points above are confirmed.
+
+**11. Business feedback: the SB1.16 file needs the yarn code added**
+
+After receiving the file, Ms. Oanh gave feedback: the SB1.16 file currently only has the yarn's text name (a description), and is missing the yarn code (the numeric code used to look it up precisely) — making it hard to cross-reference. She asked for the yarn code to be added right next to (before) each yarn-name column.
+
+Checked the actual yarn lookup screen in the system (where users pick a yarn during data entry) and confirmed: the system has a dedicated field called "yarn code" — entirely separate from the yarn name and from the internal ID already present in the file. This is exactly the information Ms. Oanh needed added.
+
+**12. Hit a database connection outage**
+
+While preparing to pull the detail needed to add the yarn code, found the database connection was down — both the primary and backup connection channels reported a timeout connecting to the database server. Checked carefully and confirmed this was a network-level issue (most likely the internal VPN connection had dropped), not a software or configuration problem — not something fixable from the data-handling side. Paused and asked the person in charge to check the network/VPN connection.
+
+**13. Reconnected — confirmed the correct data field to add**
+
+After the network connection was restored, reconfirmed the database connection was working normally, then retrieved the exact data-structure detail needed to confirm the field name "yarn code" in the system, to make sure the correct data was pulled without confusing it with the yarn name or the internal ID.
+
+While at it, also reviewed and fixed one leftover detail from the earlier data-preparation pass — one column name in the saved configuration file didn't match the actual column name used when the data was pulled the first time (because the safety system had mistakenly blocked a word that happened to match a sensitive command) — synced it back to match, with no effect on the data already delivered earlier.
+
+**14. Updated the SB1.16 data-retrieval logic — added the yarn code**
+
+Updated the SB1.16 data query: added a "yarn code" column right before each corresponding "yarn name" column (covering all 9 possible yarn slots an item can have), reusing data that was already available (no need to pull from any additional source). Tested with a small sample (5 rows) first before pulling the full dataset — confirmed the yarn code displayed correctly, in the right position right before its matching yarn name.
+
+**15. Re-pulled the full SB1.16 dataset + checked data integrity**
+
+Re-pulled the full SB1.16 dataset with the newly added yarn code column: still exactly 8,548 rows as before (no rows gained or lost), now with 9 additional yarn code columns. Checked again and confirmed no row was duplicated.
+
+**16. Rebuilt the Excel file, confirmed it, and handed it off**
+
+Rebuilt the Excel file with the complete data (including the new yarn code column), named differently from the previous file (added a "_v2" suffix) to avoid overwriting the file Ms. Oanh already had open. Reopened the new file using the actual Excel application to confirm it was correct, complete, and that the yarn code column sat in the right position (right before the yarn name) as requested.
+
+The SB1.13 file is unchanged (the addition request only applied to SB1.16). Told the person in charge: Ms. Oanh needs to be notified to close the old SB1.16 file (without the yarn code) and use the new (_v2) file instead.
