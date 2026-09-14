@@ -534,3 +534,76 @@ Mục 9 (revert V2 Origin) và mục 10 (item hiện Brazil cho lô trước 22/
 
 14. **[MỚI]** Bug carry-over pre-existing (bước 12: `OUTER JOIN` sai khiến `OUTPUT` không bao giờ thực sự trừ vào `QTY_END_MAT`) đã được xác nhận LẠI bằng dữ liệu thật hôm nay (mix_lot MIXEDF1-260627-02, số dư 5,888.74kg lặp lại y hệt suốt 3 tháng) — cần ưu tiên báo cáo/sửa thành ticket riêng, vì hiện đang bị dùng làm cơ sở (sai) để nghi ngờ ngược lại tính đúng đắn của patch CESM-418.
 15. **[MỚI]** Cần làm rõ với dev lead/BC: đề xuất "ép item/Origin thành 100% USA cho thành phẩm tháng 8" không có cơ sở dữ liệu nào ủng hộ (đã bác bỏ ở bước 12-13) — cần thống nhất lại hướng xử lý đúng (sửa bug carry-over ở đúng chỗ SỐ LƯỢNG, không đụng vào NHÃN nguyên liệu) trước khi có thay đổi code nào tiếp theo trên `LG_PRO_DAILY_LOT_TRACKING`.
+
+---
+
+## 2026-09-14
+
+**1. Dev lead chỉ đạo chạy nhánh MM cho tháng 7+8 — verify trước khi user thực thi**
+
+6 ngày sau (vấn đề "No data" vẫn chưa được khắc phục — xem điểm 12 dưới), sự việc leo thang lên cấp giám đốc. Dev lead (Doan Giau) chỉ đạo qua chat nội bộ: chạy lại `LG_PRO_DAILY_LOT_TRACKING` với `P_TYPE='MM'` cho cả tháng 7 và tháng 8, kèm xoá `TLG_LOT_TRACKING_GD_D`/`GD_M` để map lại — lý do đưa ra: "tháng 8 họ closing rồi" (nên dùng cơ chế đóng sổ tháng).
+
+Trước khi user thực thi, verify lại độ phủ thật của `TLG_CL_CLOSING_MAT_DETAIL` (nguồn dữ liệu nhánh MM sẽ dùng) so với số mixing lot thật trong `TLG_LOT_TRACKING_MAT`:
+```sql
+SELECT A.MON_CLOSE, COUNT(DISTINCT A.LOT_NO) SO_LOT_TRONG_SNAPSHOT
+FROM TLG_CL_CLOSING_MAT_DETAIL A WHERE A.DEL_IF=0 AND A.MON_CLOSE IN ('202607','202608')
+AND A.BIZ_CENTER IN (3402,3421) AND A.PHASE_NAME='WIP1' GROUP BY A.MON_CLOSE;
+
+SELECT M.STD_YM, COUNT(DISTINCT M.MIX_LOT) SO_MIX_LOT_THAT
+FROM TLG_LOT_TRACKING_MAT M WHERE M.DEL_IF=0 AND M.STD_YM IN ('202607','202608')
+GROUP BY M.STD_YM;
+```
+Kết quả: **tháng 7 — snapshot 92 lot = thực tế 92 lot (100%, đã tự bắt kịp từ lần kiểm tra 08/09)**; **tháng 8 — snapshot vẫn chỉ 90 lot, thực tế 173 lot (~52%, vẫn thiếu đáng kể)**. Đã báo rõ cho user: chạy MM cho tháng 7 an toàn, nhưng cho tháng 8 sẽ gây mất dữ liệu thật (~48% mixing lot) — đúng rủi ro đã cảnh báo từ 08/09, lý do "đã closing" của dev lead không áp dụng được cho hệ thống này vì snapshot đóng sổ do 1 pipeline khác sinh ra, không phản ánh đúng độ đầy đủ của Lot Tracking.
+
+**2. User quyết định vẫn thực thi theo chỉ đạo dev lead**
+
+Do áp lực nghiệp vụ (khách hàng yêu cầu sếp Hàn gọi điện xác nhận trong ngày), user chủ động chạy:
+```sql
+DELETE FROM TLG_LOT_TRACKING_MAT WHERE STD_YM IN ('202607','202608','202609');
+DELETE FROM TLG_LOT_TRACKING_PROD WHERE STD_YM IN ('202607','202608','202609');
+DELETE FROM TLG_LOT_TRACKING_HIS WHERE STD_YMD LIKE '202607%' OR STD_YMD LIKE '202608%' OR STD_YMD LIKE '202609%';
+DELETE FROM TLG_LOT_TRACKING_GD_D WHERE TLG_LOT_TRACKING_GD_M_PK IN (
+  SELECT X.PK FROM TLG_LOT_TRACKING_GD_M X JOIN TLG_GD_OUTGO_M D ON D.PK = X.TLG_GD_OUTGO_M_PK
+  WHERE D.OUT_DATE BETWEEN '20260701' AND '20260930');
+DELETE FROM TLG_LOT_TRACKING_GD_M WHERE PK IN (
+  SELECT X.PK FROM TLG_LOT_TRACKING_GD_M X JOIN TLG_GD_OUTGO_M D ON D.PK = X.TLG_GD_OUTGO_M_PK
+  WHERE D.OUT_DATE BETWEEN '20260701' AND '20260930');
+COMMIT;
+EXEC LG_PRO_DAILY_LOT_TRACKING('202607', 'MM');
+EXEC LG_PRO_DAILY_LOT_TRACKING('202608', 'MM');
+EXEC LG_PRO_DAILY_LOT_TRACKING('202609', 'DD');
+COMMIT;
+```
+Lưu ý: script không có lệnh rebuild GD_M/GD_D nào sau khi xoá.
+
+**3. Verify thiệt hại thật sau khi chạy — xác nhận đúng dự đoán, phát hiện thêm 2 hệ quả dây chuyền**
+
+```sql
+SELECT M.STD_YM, M.STOCK_TYPE, COUNT(*) SO_DONG, ROUND(SUM(M.INPUT_QTY),2) IN_QTY
+FROM TLG_LOT_TRACKING_MAT M WHERE M.DEL_IF = 0 AND M.STD_YM IN ('202607','202608','202609')
+GROUP BY M.STD_YM, M.STOCK_TYPE ORDER BY M.STD_YM, M.STOCK_TYPE;
+```
+
+| Tháng | Trước | Sau | Đánh giá |
+|---|---|---|---|
+| 07 (MM) | — | OPEN 90 dòng/114,667.79kg (khớp đúng snapshot đầy đủ, và DAILY/MAPPING khớp chính xác tổng thật 1,094,801.34/1,090,192) | An toàn, không mất gì |
+| 08 (MM) | OPEN 899 dòng/1,805,854.78kg | OPEN 62 dòng/119,277.13kg | **Mất thật ~1,686,577.65kg (93.4%)** |
+| 09 (DD) | OPEN 1,326 dòng/2,890,497.47kg | **OPEN = 0 dòng, hoàn toàn rỗng** | Hệ quả dây chuyền (carry-over tính từ tháng 8 vừa bị phá) |
+| GD_M/GD_D (7-9) | 13/141 lot có data | **0/0 — hoàn toàn rỗng** | Do script chỉ xoá, không có lệnh rebuild sau đó |
+
+**4. Xác định đường khôi phục — không cần làm lại từ đầu**
+
+Vì tháng 7 (dù chạy MM) tình cờ ra đúng số liệu thật (snapshot tháng 7 đã đủ 100%), dữ liệu gốc để tháng 8 tính lại carry-over qua DD vẫn còn nguyên vẹn và đúng. Chỉ cần chạy lại **DD** (không phải MM) cho tháng 8+9 — không cần DELETE tay trước, vì nhánh DD tự động soft-delete dữ liệu tháng đó ở bước đầu — rồi rebuild lại GD_M/GD_D:
+```sql
+EXEC LG_PRO_DAILY_LOT_TRACKING('202608','DD');
+EXEC LG_PRO_DAILY_LOT_TRACKING('202609','DD');
+EXEC LG_PRO_LOT_TRACKING_GD_M('20260701','20260930', NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL, 'RECOVERY-2026-09-14');
+```
+Đã bàn giao cho user thực thi khẩn cấp — **chưa có xác nhận đã chạy xong tại thời điểm ghi báo cáo này.**
+
+---
+
+**Cập nhật các điểm còn cần user/phía nghiệp vụ xác nhận (bổ sung 2026-09-14):**
+16. **[MỚI/KHẨN]** Cần xác nhận user đã chạy xong 3 lệnh khôi phục ở mục 4, và verify lại kết quả khớp đúng baseline (OPEN tháng 8 ~899 dòng/1,805,854.78kg, tháng 9 ~1,326 dòng/2,890,497.47kg, GD_M/GD_D phủ đủ) trước khi báo lại cho BC/khách hàng.
+17. **[MỚI]** Vấn đề gốc "No data" trên melt070 (đã tồn tại từ 09-09) vẫn **chưa được xác nhận khắc phục** — nguyên nhân cụ thể khiến bước rebuild GD_M/GD_D không tự hoàn tất trong các lần chạy trước đó (có thể là lỗi runtime PLS/ORA chưa được xác định do thiếu log lỗi từ Toad) vẫn cần điều tra nếu lần chạy khôi phục lần này tiếp tục không ra đủ data.
+18. **[MỚI]** Cần trao đổi lại rõ ràng với dev lead: nhánh MM không an toàn để dùng cho DONGIL cho tới khi nguồn `TLG_CL_CLOSING_MAT_DETAIL` được xác nhận phủ đủ 100% cho đúng tháng cần chạy (như đã thấy với tháng 7) — không nên dùng theo quán tính "tháng đã closing thì phải dùng MM".
