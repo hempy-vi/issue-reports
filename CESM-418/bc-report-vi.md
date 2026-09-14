@@ -367,9 +367,17 @@ Do áp lực nghiệp vụ cấp bách (khách hàng yêu cầu xác nhận tron
 
 Vì tháng 7 (dù chạy sai chế độ) tình cờ vẫn ra đúng số liệu thật (do nguồn snapshot tháng 7 đã đủ), dữ liệu gốc để tháng 8 tính lại số dư mang qua vẫn còn nguyên vẹn và đúng. Chỉ cần chạy lại đúng **chế độ thường** (không phải chế độ đóng sổ tháng) cho tháng 8 và 9 — không cần xoá tay trước, vì chế độ thường tự động dọn dẹp dữ liệu tháng đó ở bước đầu — rồi dựng lại dữ liệu theo dõi giao hàng. Đã bàn giao cho user thực hiện khẩn cấp — **chưa có xác nhận đã chạy xong tại thời điểm ghi báo cáo này.**
 
+**5. User báo đội hỗ trợ khác (Mr. Rich, Mr. Edward) đã chạy lại dữ liệu, Ms. Nabela kiểm tra báo thành công — kiểm chứng độc lập, xác nhận thành công 1 phần**
+
+Kiểm tra lại toàn bộ hệ thống, phát hiện 2 phần tách biệt:
+- **Màn hình khách hàng thấy ("không hiện dữ liệu")**: đã cải thiện rõ rệt, từ 13/141 lô (9%) lên **277/304 lô (91%) có dữ liệu**. Xác nhận đúng với báo cáo "thành công" — màn hình giờ hiển thị được cho đa số lô hàng.
+- **Dữ liệu gốc (nguyên nhân sâu)**: **vẫn đang ở nguyên trạng thái bị thiệt hại từ mục 3** — chưa được khôi phục về đúng số liệu chuẩn. Nghĩa là đội hỗ trợ đã dựng lại màn hình hiển thị trực tiếp trên nền dữ liệu đang thiếu hụt, chứ không chạy lại đúng theo cách đã đề xuất ở mục 4.
+
+**Đánh giá**: đúng là đã giải quyết được vấn đề bề mặt (màn hình không còn trống nữa), nhưng nguyên nhân gốc (số liệu tồn kho thật bị thiếu) chưa được khắc phục — các lô hàng phụ thuộc vào phần tồn kho tháng 8-9 bị thiếu đó có khả năng vẫn đang hiển thị số liệu không đầy đủ, chỉ là không còn trống nên khó nhận ra bằng mắt thường. Cần quyết định có làm tiếp để khôi phục hoàn toàn hay chấp nhận hiện trạng vì màn hình đã "trông" ổn.
+
 ---
 
 **Cập nhật các điểm còn cần user/phía DONGIL xác nhận (bổ sung 2026-09-14):**
-16. **[MỚI/KHẨN]** Cần xác nhận user đã chạy xong các lệnh khôi phục ở mục 4, và kiểm chứng lại kết quả khớp đúng số liệu chuẩn trước khi báo lại cho phía kinh doanh/khách hàng.
-17. **[MỚI]** Vấn đề gốc "không hiện dữ liệu" (tồn tại từ 09-09) vẫn **chưa được xác nhận khắc phục xong** — nếu lần chạy khôi phục này vẫn không ra đủ dữ liệu, cần điều tra thêm nguyên nhân kỹ thuật cụ thể khiến bước dựng lại dữ liệu giao hàng không tự hoàn tất trong các lần chạy trước.
+16. **[MỚI]** Đã xác nhận vấn đề "không hiện dữ liệu" trên màn hình được giải quyết (277/304 lô, 91%) nhờ đội hỗ trợ khác — nhưng dữ liệu gốc vẫn đang thiếu khoảng 93% số lượng tồn kho mang qua tháng 8 (mục 5) — **cần quyết định: làm tiếp để khôi phục hoàn toàn, hay chấp nhận hiện trạng.**
+17. **[MỚI]** Nguyên nhân cụ thể khiến bước dựng lại màn hình không tự hoàn tất trong các lần chạy trước theo đúng quy trình đề xuất — vẫn chưa điều tra, nhưng bớt cấp bách hơn vì đội khác đã tìm được cách khác để dựng lại thành công (dù trên nền dữ liệu còn thiếu).
 18. **[MỚI]** Cần trao đổi lại rõ ràng với dev lead: chế độ "đóng sổ tháng" chưa an toàn để dùng cho DONGIL cho tới khi nguồn dữ liệu snapshot được xác nhận đầy đủ 100% cho đúng tháng cần chạy — không nên áp dụng theo quán tính "tháng đã đóng sổ kế toán thì phải dùng chế độ đóng sổ".

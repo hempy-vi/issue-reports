@@ -372,9 +372,17 @@ Under urgent business pressure (the customer required same-day confirmation), th
 
 Since July (even though run in the wrong mode) happened to produce the true correct figures (its snapshot source is now complete), the underlying data August needs to recompute its carried-forward balance remains intact and correct. Simply rerun the correct **normal mode** (not closing mode) for August and September — no manual clearing needed first, since normal mode automatically cleans up that month's data as its first step — then rebuild the delivery-tracking data. Handed off to the user to run urgently — **not yet confirmed as completed as of when this report was written.**
 
+**5. User reported another support team (Mr. Rich, Mr. Edward) reran the data, Ms. Nabela checked and reported success — independently verified, confirmed partial success**
+
+Checked the whole system again, found 2 separate parts:
+- **The screen the customer sees ("no data showing")**: improved substantially, from 13/141 lots (9%) to **277/304 lots (91%) with data**. This confirms the "success" report — the screen now displays data for the vast majority of lots.
+- **The underlying source data (the root cause)**: **still in the exact damaged state from item 3** — not yet restored to the correct baseline figures. This means the support team rebuilt the display directly on top of the still-incomplete data, rather than rerunning it the way recommended in item 4.
+
+**Assessment**: the surface-level issue has genuinely been resolved (the screen is no longer blank), but the underlying root cause (real missing inventory data) has not been fixed — lots depending on the missing August-September inventory may still be showing incomplete figures, just no longer blank, making the gap much harder to notice. A decision is needed: continue to a full recovery, or accept the current state since the screen now looks fine.
+
 ---
 
 **Updated open items still awaiting confirmation from the user/DONGIL side (added 2026-09-14):**
-16. **[NEW/URGENT]** Need confirmation the user has run the recovery commands in item 4, and verify the result matches the correct baseline figures before reporting back to business/the customer.
-17. **[NEW]** The root "no data showing" issue (present since 09-09) is still **not confirmed fixed** — if this recovery run also fails to produce full data, further investigation is needed into the specific technical reason the delivery-tracking rebuild step failed to complete on its own in prior attempts.
+16. **[NEW]** Confirmed the "no data showing" issue is resolved (277/304 lots, 91%) thanks to another support team rebuilding the screen's data — but the underlying source data is still missing about 93% of August's carried-forward inventory quantity (item 5) — **needs a decision: continue to a full recovery, or accept the current state.**
+17. **[NEW]** The specific reason the delivery-tracking rebuild step failed to complete on its own in prior attempts using the recommended procedure is still not investigated, but is now lower priority since another team found an alternate way to rebuild it successfully (even if on top of incomplete data).
 18. **[NEW]** Needs to be clearly communicated to the dev lead: "monthly-closing mode" is not safe to use for DONGIL until the snapshot data source is confirmed to be 100% complete for the specific month being run (as was seen for July) — it should not be used by default reasoning of "the books are closed, so closing mode must be used."

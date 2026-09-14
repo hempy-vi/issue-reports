@@ -601,9 +601,29 @@ EXEC LG_PRO_LOT_TRACKING_GD_M('20260701','20260930', NULL,NULL,NULL,NULL,NULL,NU
 ```
 Handed off to the user to run urgently — **not yet confirmed as executed as of when this report was written.**
 
+**5. User reported another support team (Mr. Rich, Mr. Edward) reran the data, Ms. Nabela checked and reported success — independently verified, confirmed partial success**
+
+Restarted Docker, re-verified everything:
+```sql
+SELECT M.STD_YM, M.STOCK_TYPE, COUNT(*) SO_DONG, ROUND(SUM(M.INPUT_QTY),2) IN_QTY
+FROM TLG_LOT_TRACKING_MAT M WHERE M.DEL_IF = 0 AND M.STD_YM IN ('202607','202608','202609')
+GROUP BY M.STD_YM, M.STOCK_TYPE ORDER BY M.STD_YM, M.STOCK_TYPE;
+
+SELECT COUNT(*) TONG_LOT, SUM(CASE WHEN GD_D_CNT=0 THEN 1 ELSE 0 END) SO_LOT_NO_DATA
+FROM (SELECT X.PK, (SELECT COUNT(*) FROM TLG_LOT_TRACKING_GD_D Z WHERE Z.DEL_IF=0 AND Z.TLG_LOT_TRACKING_GD_M_PK=X.PK) GD_D_CNT
+      FROM TLG_LOT_TRACKING_GD_M X JOIN TLG_GD_OUTGO_M D ON D.PK=X.TLG_GD_OUTGO_M_PK
+      WHERE X.DEL_IF=0 AND X.LEVEL_TYPE='LOT' AND D.OUT_DATE BETWEEN '20260701' AND '20260930');
+```
+
+**Result — 2 separate parts:**
+- **GD_M/GD_D (the customer-visible symptom — the "No data" screen)**: improved substantially, from 13/141 lots (9%) to **277/304 lots (91%) with data**. This confirms the "success" report — the melt070 screen now displays data for the vast majority of lots.
+- **`TLG_LOT_TRACKING_MAT` (the underlying source data, the root cause)**: **STILL in the exact damaged state from item 3** — August OPEN is still 62 rows/119,277.13kg (not restored to 899 rows/1,805,854.78kg), September OPEN is still completely 0 rows. This means the support team rebuilt GD_M/GD_D directly on top of the still-incomplete (~93% missing) MAT data, WITHOUT rerunning DD as recommended in item 4.
+
+**Assessment**: the surface-level symptom has genuinely been resolved (the screen is no longer blank), but the underlying root cause (real missing carry-over data) has not been fixed — lots that depend on the missing August-September inventory may still be showing incomplete KG/material-composition figures, just no longer blank, making the gap much harder to notice visually. A decision is needed: rerun DD per item 4 for a full recovery, or accept the current state since the screen now "looks" fine.
+
 ---
 
 **Updated open items still awaiting user/business confirmation (added 2026-09-14):**
-16. **[NEW/URGENT]** Need confirmation the user has run the 3 recovery commands in item 4, and verify the result matches the known-correct baseline (August OPEN ~899 rows/1,805,854.78kg, September ~1,326 rows/2,890,497.47kg, full GD_M/GD_D coverage) before reporting back to business/the customer.
-17. **[NEW]** The root "No data" issue on melt070 (present since 09-09) is still **not confirmed fixed** — the specific reason the GD_M/GD_D rebuild step failed to complete on its own in prior attempts (possibly an unidentified PLS/ORA runtime error, since no error log from Toad was captured) still needs investigation if this recovery run also fails to produce full data.
+16. **[NEW]** Confirmed the "No data" symptom on melt070 is resolved (277/304 lots, 91%) thanks to another support team rebuilding GD_M/GD_D — but the underlying `TLG_LOT_TRACKING_MAT` source data is still missing ~93% of August's OPEN carry-over (item 5) — **needs a decision: rerun DD per item 4 for a full recovery, or accept the current state since the screen now "looks" fine.**
+17. **[NEW]** The specific reason the GD_M/GD_D rebuild step failed to complete on its own in prior DD-based attempts (suspected unidentified PLS/ORA runtime error, no error log from Toad captured) is still not investigated, but is now lower priority since another team found an alternate path to successfully rebuild GD_M/GD_D (even if on top of incomplete data).
 18. **[NEW]** Needs to be clearly communicated to the dev lead: the MM branch is not safe to use for DONGIL until `TLG_CL_CLOSING_MAT_DETAIL` is confirmed to have 100% coverage for the specific month being run (as was seen for July) — it should not be used by default reasoning of "the month is already closed, so MM must be used."

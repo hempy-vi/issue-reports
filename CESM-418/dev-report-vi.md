@@ -601,9 +601,29 @@ EXEC LG_PRO_LOT_TRACKING_GD_M('20260701','20260930', NULL,NULL,NULL,NULL,NULL,NU
 ```
 Đã bàn giao cho user thực thi khẩn cấp — **chưa có xác nhận đã chạy xong tại thời điểm ghi báo cáo này.**
 
+**5. User báo team hỗ trợ khác (Mr. Rich, Mr. Edward) đã chạy lại data, Ms. Nabela kiểm tra báo thành công — verify độc lập, xác nhận thành công 1 phần**
+
+Restart Docker, verify lại toàn bộ:
+```sql
+SELECT M.STD_YM, M.STOCK_TYPE, COUNT(*) SO_DONG, ROUND(SUM(M.INPUT_QTY),2) IN_QTY
+FROM TLG_LOT_TRACKING_MAT M WHERE M.DEL_IF = 0 AND M.STD_YM IN ('202607','202608','202609')
+GROUP BY M.STD_YM, M.STOCK_TYPE ORDER BY M.STD_YM, M.STOCK_TYPE;
+
+SELECT COUNT(*) TONG_LOT, SUM(CASE WHEN GD_D_CNT=0 THEN 1 ELSE 0 END) SO_LOT_NO_DATA
+FROM (SELECT X.PK, (SELECT COUNT(*) FROM TLG_LOT_TRACKING_GD_D Z WHERE Z.DEL_IF=0 AND Z.TLG_LOT_TRACKING_GD_M_PK=X.PK) GD_D_CNT
+      FROM TLG_LOT_TRACKING_GD_M X JOIN TLG_GD_OUTGO_M D ON D.PK=X.TLG_GD_OUTGO_M_PK
+      WHERE X.DEL_IF=0 AND X.LEVEL_TYPE='LOT' AND D.OUT_DATE BETWEEN '20260701' AND '20260930');
+```
+
+**Kết quả — 2 phần tách biệt:**
+- **GD_M/GD_D (triệu chứng khách hàng thấy — màn hình "No data")**: đã cải thiện rõ rệt, từ 13/141 lot (9%) lên **277/304 lot (91%) có data**. Xác nhận đúng với báo cáo "thành công" — màn hình melt070 giờ hiển thị được cho đa số lot.
+- **`TLG_LOT_TRACKING_MAT` (dữ liệu gốc, nguyên nhân sâu)**: **VẪN ở nguyên trạng thái bị thiệt hại từ mục 3** — OPEN tháng 8 vẫn 62 dòng/119,277.13kg (chưa về lại 899 dòng/1,805,854.78kg), OPEN tháng 9 vẫn hoàn toàn 0 dòng. Nghĩa là team hỗ trợ đã rebuild GD_M/GD_D trực tiếp trên nền MAT đang thiếu ~93%, KHÔNG chạy lại DD như đề xuất ở mục 4.
+
+**Đánh giá**: đúng là đã giải quyết triệu chứng bề mặt (màn hình không còn trống), nhưng nguyên nhân gốc (dữ liệu carry-over thiếu hụt thật) chưa được khắc phục — các lot phụ thuộc vào phần tồn kho tháng 8-9 bị thiếu có khả năng vẫn đang hiển thị số liệu KG/thành phần nguyên liệu không đầy đủ, chỉ là không còn hiện trống nên khó phát hiện bằng mắt thường. Cần quyết định có chạy lại đúng theo mục 4 để khôi phục hoàn toàn hay chấp nhận trạng thái hiện tại.
+
 ---
 
 **Cập nhật các điểm còn cần user/phía nghiệp vụ xác nhận (bổ sung 2026-09-14):**
-16. **[MỚI/KHẨN]** Cần xác nhận user đã chạy xong 3 lệnh khôi phục ở mục 4, và verify lại kết quả khớp đúng baseline (OPEN tháng 8 ~899 dòng/1,805,854.78kg, tháng 9 ~1,326 dòng/2,890,497.47kg, GD_M/GD_D phủ đủ) trước khi báo lại cho BC/khách hàng.
-17. **[MỚI]** Vấn đề gốc "No data" trên melt070 (đã tồn tại từ 09-09) vẫn **chưa được xác nhận khắc phục** — nguyên nhân cụ thể khiến bước rebuild GD_M/GD_D không tự hoàn tất trong các lần chạy trước đó (có thể là lỗi runtime PLS/ORA chưa được xác định do thiếu log lỗi từ Toad) vẫn cần điều tra nếu lần chạy khôi phục lần này tiếp tục không ra đủ data.
+16. **[MỚI]** Đã xác nhận triệu chứng "No data" trên melt070 được giải quyết (277/304 lot, 91%) nhờ đội hỗ trợ khác rebuild GD_M/GD_D — nhưng dữ liệu gốc `TLG_LOT_TRACKING_MAT` vẫn ở trạng thái thiếu ~93% OPEN carry-over tháng 8 (mục 5) — **cần quyết định: chạy lại DD theo mục 4 để khôi phục triệt để, hay chấp nhận hiện trạng vì màn hình đã "trông" ổn.**
+17. **[MỚI]** Nguyên nhân cụ thể khiến bước rebuild GD_M/GD_D không tự hoàn tất trong các lần chạy DD-based trước đó (nghi lỗi runtime PLS/ORA, chưa có log lỗi từ Toad) — vẫn chưa điều tra, nhưng bớt cấp bách hơn vì team khác đã tìm được đường khác để rebuild GD_M/GD_D thành công (dù trên nền dữ liệu thiếu).
 18. **[MỚI]** Cần trao đổi lại rõ ràng với dev lead: nhánh MM không an toàn để dùng cho DONGIL cho tới khi nguồn `TLG_CL_CLOSING_MAT_DETAIL` được xác nhận phủ đủ 100% cho đúng tháng cần chạy (như đã thấy với tháng 7) — không nên dùng theo quán tính "tháng đã closing thì phải dùng MM".
