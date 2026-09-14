@@ -339,3 +339,37 @@ Mục 9 và mục 10 ở phần đầu ngày (liên quan tới việc có ép hi
 
 14. **[MỚI]** Vấn đề kỹ thuật cũ về cách tính số dư mang qua tháng (không trừ đúng theo tiêu thụ thực) vừa được xác nhận LẠI bằng dữ liệu thật hôm nay — nên được ưu tiên báo cáo/xử lý thành 1 yêu cầu riêng, vì hiện đang bị dùng làm căn cứ (không chính xác) để nghi ngờ ngược lại tính đúng đắn của bản sửa chính đang làm.
 15. **[MỚI]** Cần thống nhất lại với dev lead/phía nghiệp vụ: đề xuất "ép thành phẩm tháng 8 hiện 100% đã duyệt" không có dữ liệu nào ủng hộ (đã bác bỏ ở bước 12-13) — cần đồng thuận hướng xử lý đúng (sửa vấn đề tính SỐ LƯỢNG, không đụng vào NHÃN nguyên liệu) trước khi có bất kỳ thay đổi nào tiếp theo lên hệ thống.
+
+---
+
+## 2026-09-14
+
+**1. Dev lead chỉ đạo dùng chế độ "đóng sổ tháng" cho tháng 7+8 — kiểm tra trước khi user thực hiện**
+
+6 ngày sau (vấn đề "không hiện dữ liệu" vẫn chưa được khắc phục — xem mục 12 dưới), sự việc leo thang lên cấp giám đốc, khách hàng yêu cầu sếp Hàn gọi điện xác nhận trong ngày. Dev lead chỉ đạo: chạy lại cơ chế "đóng sổ tháng" (thay vì cơ chế hàng ngày như đang dùng) cho cả tháng 7 và tháng 8, kèm xoá dữ liệu theo dõi giao hàng để map lại — lý do: tháng 8 khách đã đóng sổ kế toán rồi nên nên dùng đúng cơ chế đóng sổ.
+
+Trước khi user thực hiện, kiểm tra lại độ đầy đủ thật của nguồn dữ liệu snapshot mà chế độ "đóng sổ tháng" sẽ dùng, so với số liệu thật trong hệ thống theo dõi lô: xác nhận **tháng 7 nguồn snapshot giờ đã đầy đủ 100%** (đã tự bắt kịp từ lần kiểm tra trước), nhưng **tháng 8 vẫn chỉ đủ khoảng 52%, còn thiếu gần một nửa**. Đã báo rõ cho user: chạy chế độ này cho tháng 7 an toàn, nhưng cho tháng 8 sẽ gây mất dữ liệu thật — đúng rủi ro đã cảnh báo từ trước; lý do "đã đóng sổ nên phải dùng chế độ đóng sổ" không áp dụng đúng cho hệ thống này vì nguồn snapshot do 1 quy trình hoàn toàn khác sinh ra, không phản ánh đúng độ đầy đủ của module theo dõi lô.
+
+**2. User quyết định vẫn thực hiện theo chỉ đạo dev lead**
+
+Do áp lực nghiệp vụ cấp bách (khách hàng yêu cầu xác nhận trong ngày), user chủ động thực hiện theo đúng chỉ đạo: xoá dữ liệu tháng 7-8-9 (cả phần theo dõi nguyên liệu lẫn phần theo dõi giao hàng), rồi chạy lại bằng chế độ "đóng sổ tháng" cho tháng 7 và tháng 8, chế độ thường cho tháng 9. Lưu ý: không có bước dựng lại dữ liệu theo dõi giao hàng sau khi xoá.
+
+**3. Kiểm chứng thiệt hại thật sau khi chạy — đúng như dự đoán, cộng thêm 2 hệ quả dây chuyền chưa lường trước**
+
+| Tháng | Trước | Sau | Đánh giá |
+|---|---|---|---|
+| 07 (đóng sổ tháng) | — | Khớp đúng 100% với số liệu thật | An toàn, không mất gì |
+| 08 (đóng sổ tháng) | ~1.8 triệu kg tồn mang qua | Chỉ còn ~119 nghìn kg | **Mất thật khoảng 93% số lượng tồn kho mang qua tháng** |
+| 09 (chế độ thường) | ~2.9 triệu kg tồn mang qua | **Hoàn toàn về 0** | Hệ quả dây chuyền — vì số liệu tháng 9 tính dựa trên tháng 8 vừa bị mất |
+| Dữ liệu theo dõi giao hàng (7-9) | 13/141 lô có dữ liệu | **Hoàn toàn trống (0/141)** | Vì bước xoá không có bước dựng lại đi kèm |
+
+**4. Xác định hướng khôi phục — không cần làm lại từ đầu**
+
+Vì tháng 7 (dù chạy sai chế độ) tình cờ vẫn ra đúng số liệu thật (do nguồn snapshot tháng 7 đã đủ), dữ liệu gốc để tháng 8 tính lại số dư mang qua vẫn còn nguyên vẹn và đúng. Chỉ cần chạy lại đúng **chế độ thường** (không phải chế độ đóng sổ tháng) cho tháng 8 và 9 — không cần xoá tay trước, vì chế độ thường tự động dọn dẹp dữ liệu tháng đó ở bước đầu — rồi dựng lại dữ liệu theo dõi giao hàng. Đã bàn giao cho user thực hiện khẩn cấp — **chưa có xác nhận đã chạy xong tại thời điểm ghi báo cáo này.**
+
+---
+
+**Cập nhật các điểm còn cần user/phía DONGIL xác nhận (bổ sung 2026-09-14):**
+16. **[MỚI/KHẨN]** Cần xác nhận user đã chạy xong các lệnh khôi phục ở mục 4, và kiểm chứng lại kết quả khớp đúng số liệu chuẩn trước khi báo lại cho phía kinh doanh/khách hàng.
+17. **[MỚI]** Vấn đề gốc "không hiện dữ liệu" (tồn tại từ 09-09) vẫn **chưa được xác nhận khắc phục xong** — nếu lần chạy khôi phục này vẫn không ra đủ dữ liệu, cần điều tra thêm nguyên nhân kỹ thuật cụ thể khiến bước dựng lại dữ liệu giao hàng không tự hoàn tất trong các lần chạy trước.
+18. **[MỚI]** Cần trao đổi lại rõ ràng với dev lead: chế độ "đóng sổ tháng" chưa an toàn để dùng cho DONGIL cho tới khi nguồn dữ liệu snapshot được xác nhận đầy đủ 100% cho đúng tháng cần chạy — không nên áp dụng theo quán tính "tháng đã đóng sổ kế toán thì phải dùng chế độ đóng sổ".
