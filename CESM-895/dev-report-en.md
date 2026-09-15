@@ -88,3 +88,72 @@ Result: 431 rolls with decision='Q' (passed) sum to **8,069.3 kg** - an exact ma
 **8. Explained a further discrepancy against another QC report (SD.9.3.1 Total View New Table / SD.8.4_V6 F.G Inquiry-Package)**
 
 User cross-checked against another QC report and found `QC Weight = 8,645.1` / `Good Weight = 8,542.4` - not matching 8,069.3. Confirmed `TABLE_MG_2` keeps two separate rows by `DATA_TYPE`: `'QC'` (in-process check right after production, giving 8,069.3/8,191.4) and `'OQC'` (Outgoing QC - final check before packing/shipment, giving 8,542.4/8,645.1), computed from two different sources/formulas inside `JOB_INSERT_MARGIN_TABLE`. Report `SD.8.4_V6 F.G Inquiry-Package` (the word 'Package' indicates the packing stage) correctly displays the `OQC` figure, while SS.2.5.1 (for this order) uses the `QC` figure - the two reports are showing two different QC checkpoints of the same production lot, not a data inconsistency.
+
+## 2026-09-15
+
+**1. Identified the form and located the correct Profit 2 formula**
+
+User asked a follow-up: form **SS.2.5.2 "Margin Table Packages"** (`sa400190_v3.aspx`, same family as SS.2.5/SS.2.5.1) showed 'Profit 2' as **-9,239.61** (about -73 percent) for order `202607-0457WHTX`, while the regular 'Profit' row above it was a normal positive value (+3,423.04, +27 percent). Read the dso: `function="sp_sel_sa400190_v3"`, reading through view `SA_MG_TABLE`. Read the entire DECODE block carefully this time (learning from an earlier mistake of misreading dead code) to get the true live formula:
+
+```sql
+PROFIT_AMT_USD2 = ROUND(
+    NVL(NEGO_AMT,0)
+  - (NVL(COMMISSION_AMT_1,0)+NVL(COMMISSION_AMT_2,0)+NVL(COMMISSION_AMT_3,0)
+   + NVL(PAYMENT_CONDITION_AMT_1,0)+...+NVL(PAYMENT_CONDITION_AMT_6,0)
+   + NVL(FINISH1_AMT,0)+NVL(FINISH2_AMT,0)+NVL(FINISH3_AMT,0)
+   + NVL(FINISH5_AMT,0)+NVL(FINISH6_AMT,0)   -- FINISH4_AMT is commented out, not counted
+   + NVL(DYEING_AMT,0)+NVL(KNITTING_AMT,0)
+   + NVL(PREDYE_AMT,0)+NVL(PREDYE_AMT2,0)
+   + NVL(YARN_TOTAL_AMT,0)+NVL(CHARGE_AMT,0))
+  - NVL(CLAIM_AMT,0)
+, 2)
+```
+`NEGO_AMT` comes from the 'Nego Information' tab (`SA_IE_NEGO_D`), `CHARGE_AMT` from the 'Export Charge' tab (`TSA_EXP_CHGR_ITEM_DTL`), `CLAIM_AMT` from the 'Claim Note' tab (`SA_CLAIM_NOTE_ENTRY_D`, counting only claims with confirmed `STATUS='Y'`).
+
+**2. Queried the view directly for this order and found NEGO_AMT = NULL**
+
+```sql
+SELECT TOTAL_COST_USD, PROFIT_AMT_USD2, NEGO_AMT, CHARGE_AMT, CLAIM_AMT
+FROM SA_MG_TABLE WHERE SA_SALE_ORDER_PK = 151779;
+```
+→ `NEGO_AMT`/`CHARGE_AMT`/`CLAIM_AMT` were all NULL, and `PROFIT_AMT_USD2` exactly equaled `-TOTAL_COST_USD` - confirming NEGO_AMT was being treated as 0.
+
+**3. Traced why NEGO_AMT was NULL despite real Nego data existing**
+
+Queried `SA_IE_NEGO_D` directly by `SA_SALE_ORDER_PK=151779` and found one real row worth **$6,429.78**. Read the view's join logic carefully: `NEGO_AMT` links back to a sale order via a TEXT match `Z.ORDER_NO||Z.SUB_NO = SA_NEGO_SPLIT_QTY.PO_NO` (not via a direct PK relationship):
+```sql
+SELECT so.PO_NO, x.PO_NO AS SPLIT_PO_NO
+FROM SA_SALE_ORDER so
+JOIN SA_IE_NEGO_D n ON n.SA_SALE_ORDER_PK = so.PK
+JOIN SA_NEGO_SPLIT_QTY x ON x.PK = n.SA_NEGO_SPLIT_QTY_PK
+WHERE so.PK = 151779;
+```
+→ `SPLIT_PO_NO = '202409-0442HDELTA'` (the Order No/Sub No of a completely different, unrelated order, not this order's real PO No `BD19579`) - a wrongly formatted field value, preventing the view from linking the Nego amount back to the correct order.
+
+**4. Confirmed the correct value and checked safety before applying the fix**
+
+Sampled 20 other `SA_NEGO_SPLIT_QTY.PO_NO` values across the table and confirmed the established convention is indeed `ORDER_NO+SUB_NO` format (e.g. `202608-0373V037V`), so the correct value is `'202607-0457WHTX'` (not the real PO No `BD19579` as first guessed). Verified that `SA_NEGO_SPLIT_QTY.PK=221375` is referenced by exactly one Nego entry, and that the unrelated order it was mismatched to (`202409-0442HDELTA`, PK=114831) has its own separate Nego record (which is itself similarly broken, pointing to a third order) - so the fix carries no side effect on other orders' data.
+
+**5. Applied the fix and verified the result**
+
+```sql
+UPDATE SA_NEGO_SPLIT_QTY
+SET PO_NO = '202607-0457WHTX'
+WHERE PK = 221375 AND DEL_IF = 0 AND PO_NO = '202409-0442HDELTA';
+COMMIT;
+```
+Re-queried the view afterward: `NEGO_AMT = 6,429.78` (now correct), `PROFIT_AMT_USD2 = -2,158.7` (= 6,429.78 minus the 8,588.48 Total Cost at that moment) - the formula now runs correctly against real data, no longer showing a false negative caused by missing data.
+
+**6. Broader scan uncovered a recurring system-wide pattern (flagged separately, not addressed here)**
+
+```sql
+SELECT COUNT(*) TOTAL_LINKED,
+  SUM(CASE WHEN UPPER(x.PO_NO)=UPPER(so.ORDER_NO||so.SUB_NO) THEN 1 ELSE 0 END) MATCHED,
+  SUM(CASE WHEN x.PO_NO IS NULL THEN 1 ELSE 0 END) PO_NO_NULL,
+  SUM(CASE WHEN x.PO_NO IS NOT NULL AND UPPER(x.PO_NO)!=UPPER(so.ORDER_NO||so.SUB_NO) THEN 1 ELSE 0 END) MISMATCHED
+FROM SA_IE_NEGO_D n
+JOIN SA_SALE_ORDER so ON so.PK=n.SA_SALE_ORDER_PK
+LEFT JOIN SA_NEGO_SPLIT_QTY x ON x.PK=n.SA_NEGO_SPLIT_QTY_PK AND x.DEL_IF=0
+WHERE n.DEL_IF=0;
+```
+→ **23,865 of 234,036 rows (about 10 percent)** system-wide have the same kind of PO_NO mismatch. Grouping by `CRT_BY`/month showed the issue spread continuously over more than a year and a half (2023-05 through 2024-11+) across a handful of specific users (ntrang, nnhung, nvan, nnphuong), not concentrated in one batch event - suggesting a recurring data-entry pattern (such as a 'copy from previous order' feature that fails to refresh the reference field) rather than a one-time incident. The exact mechanism/screen was not pinpointed (would require separate investigation) - flagged back to the user/IT for a decision, out of scope for this immediate fix.

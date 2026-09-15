@@ -33,3 +33,21 @@ Chênh lệch giữa 2 số là do hao hụt/lỗi phát sinh trong quá trình 
 **6. Giải đáp thêm: vì sao không thấy số 8,069.3 trên 1 report QC khác mà user đối chiếu**
 
 Trong quy trình sản xuất, hàng được kiểm chất lượng (QC) **2 lần ở 2 thời điểm khác nhau**: lần đầu ngay sau sản xuất (cho ra số 8,069.3 trên SS.2.5.1) và lần hai ngay trước khi đóng gói/xuất hàng (Outgoing QC — cho ra số khác, 8,542.4, trên report user đối chiếu). Đây là 2 mốc kiểm tra riêng biệt của cùng 1 lô hàng, nên ra 2 số khác nhau là bình thường, không phải sai lệch dữ liệu.
+
+## 2026-09-15
+
+**1. Giải thích công thức Profit 2 và vì sao ra âm nặng cho order 202607-0457WHTX**
+
+User hỏi tiếp: form SS.2.5.2 "Margin Table Packages" hiện Profit 2 = -9,239.61 (âm gần 73%) cho order này, trong khi Profit (dòng thường) vẫn dương bình thường. Giải thích: Profit 2 là công thức lợi nhuận đầy đủ hơn, lấy giá bán theo **giá đã Nego** (thương lượng thực tế với khách) trừ đi **toàn bộ chi phí** (bao gồm cả hoa hồng, phí vận chuyển, phí xuất khẩu...) và trừ tiền Claim nếu có — khác với Profit thường chỉ trừ chi phí sản xuất cơ bản.
+
+**2. Phát hiện nguyên nhân: dữ liệu Nego bị gán nhầm sang order khác**
+
+Order này thực ra ĐÃ có giá Nego được nhập (**$6,429.78**), nhưng do lỗi liên kết dữ liệu, hệ thống lại không nhận ra khoản này là của order này — vô tình gán nhầm nó cho 1 order hoàn toàn khác. Vì vậy khi tính Profit 2, hệ thống coi như doanh thu = 0, kéo Profit 2 xuống âm gần bằng toàn bộ chi phí sản xuất.
+
+**3. Sửa lại liên kết và xác nhận kết quả**
+
+Sau khi kiểm tra kỹ để đảm bảo không ảnh hưởng đến order khác, đã sửa lại đúng liên kết cho order này. Sau khi sửa: Profit 2 tính lại ra **-2,158.7** — vẫn âm, nhưng giờ là con số THẬT (do giá đã chốt với khách thấp hơn chi phí sản xuất), không còn là số âm giả do thiếu dữ liệu như trước.
+
+**4. Phát hiện thêm: lỗi liên kết này khá phổ biến trong hệ thống**
+
+Kiểm tra mở rộng phát hiện có khoảng **10% tổng số dữ liệu Nego** trong toàn hệ thống (gần 24.000 dòng) đang gặp lỗi liên kết tương tự, xảy ra rải rác liên tục hơn 1 năm rưỡi qua bởi nhiều nhân viên khác nhau — cho thấy đây có thể là 1 thao tác quen thuộc trong quy trình nhập liệu đang gây lỗi âm thầm, chứ không phải sự cố 1 lần. Đã báo lại cho user biết để cân nhắc có cần rà soát/dọn dữ liệu diện rộng hay không — phạm vi này lớn hơn nhiều so với việc sửa 1 order, chưa xử lý trong lần này.
